@@ -51,7 +51,6 @@ import (
 	"github.com/Silo-Server/silo-server/internal/config"
 	"github.com/Silo-Server/silo-server/internal/database"
 	"github.com/Silo-Server/silo-server/internal/ebooks"
-	"github.com/Silo-Server/silo-server/internal/manga"
 	evt "github.com/Silo-Server/silo-server/internal/events"
 	"github.com/Silo-Server/silo-server/internal/historyimport"
 	"github.com/Silo-Server/silo-server/internal/imagecache"
@@ -62,6 +61,7 @@ import (
 	"github.com/Silo-Server/silo-server/internal/logfilter"
 	"github.com/Silo-Server/silo-server/internal/logstream"
 	"github.com/Silo-Server/silo-server/internal/mail"
+	"github.com/Silo-Server/silo-server/internal/manga"
 	"github.com/Silo-Server/silo-server/internal/markers"
 	"github.com/Silo-Server/silo-server/internal/mdblist"
 	"github.com/Silo-Server/silo-server/internal/metadata"
@@ -85,6 +85,7 @@ import (
 	"github.com/Silo-Server/silo-server/internal/secret"
 	"github.com/Silo-Server/silo-server/internal/sections"
 	"github.com/Silo-Server/silo-server/internal/server"
+	"github.com/Silo-Server/silo-server/internal/streamauth"
 	"github.com/Silo-Server/silo-server/internal/subtitles"
 	"github.com/Silo-Server/silo-server/internal/taskmanager"
 	taskrepository "github.com/Silo-Server/silo-server/internal/taskmanager/repository"
@@ -603,7 +604,10 @@ func main() {
 
 		var handler http.Handler
 		if mode == "proxy" {
-			srv := proxy.NewServer(watcher, tracker)
+			// The node reads the central-written session-deny marker before serving
+			// so an admin-killed stream is refused regardless of token TTL.
+			leaseStore := streamauth.NewStore(redisClient, 0)
+			srv := proxy.NewServer(watcher, tracker, leaseStore)
 			handler = srv.Handler()
 		} else {
 			srv := transcodenode.NewServer(watcher, tracker)
@@ -1387,6 +1391,7 @@ func main() {
 		)
 		userStoreProvider = notifications.WrapUserStoreProvider(userStoreProvider, notificationSystem)
 		deps.Notifications = notificationSystem
+
 		if libraryIngestExecutor != nil {
 			libraryIngestExecutor.SetAvailabilityDetector(notificationSystem.Detector)
 		}
