@@ -124,12 +124,11 @@ type PlaybackHandler struct {
 	FFmpegPath              string
 	HWAccel                 string
 	TranscodeDir            string
-	// RecipeStore persists transcode recipe cards so a compat transcode can be
-	// reconstructed after a restart. Set by the router; nil/disabled = off.
-	RecipeStore playback.RecipeStore
-	// tm is the shared transcode-session lifecycle (live map, recipe cards,
-	// reconstruct) — the same type the native handler uses, so jellycompat gets
-	// the card lifetime, reconstruct cap, and node-affinity rule for free.
+	// tm is the shared transcode-session lifecycle (live map, reconstruct) — the
+	// same type the native handler uses, so jellycompat gets the reconstruct cap
+	// and node-affinity rule for free. The reconstruction recipe is carried in the
+	// compat playback store (PlaybackSession.Recipe), since Jellyfin clients cannot
+	// round-trip a native stream token.
 	tm           *playback.TranscodeManager
 	SubtitleRepo subtitles.Repository // optional; enables downloaded subtitles
 	S3Client     subtitles.S3Client   // optional; for serving S3 subtitles
@@ -210,8 +209,7 @@ func NewPlaybackHandler(
 		tm:             playback.NewTranscodeManager(),
 	}
 	// Wire the shared transcode manager with closures so it reads the handler's
-	// (late-set) RecipeStore/JWTSecret lazily, matching the native handler.
-	h.tm.StoreFn = func() playback.RecipeStore { return h.RecipeStore }
+	// (late-set) JWTSecret lazily, matching the native handler.
 	h.tm.JWTSecretFn = func() string { return h.JWTSecret }
 	h.tm.Config = func() playback.TranscodeRuntimeConfig {
 		return playback.TranscodeRuntimeConfig{
@@ -227,8 +225,8 @@ func NewPlaybackHandler(
 		h.tm.Sessions = reg
 	}
 	h.tm.OnFFmpegCrash = func(ctx context.Context, sessionID string) {
-		// ffmpeg crash: drop the dead transcode (keeping the card so a resume can
-		// reconstruct) and stop the upstream native session.
+		// ffmpeg crash: drop the dead transcode and stop the upstream native
+		// session. The recipe stays in the compat store so a resume reconstructs.
 		nodeURL := ""
 		if h.sessionMgr != nil {
 			if up, err := h.sessionMgr.GetSession(sessionID); err == nil && up != nil {
@@ -236,7 +234,7 @@ func NewPlaybackHandler(
 			}
 			_ = h.sessionMgr.StopSession(sessionID)
 		}
-		h.tm.CloseTranscodeSession(sessionID, nodeURL, false)
+		h.tm.CloseTranscodeSession(sessionID, nodeURL)
 	}
 	return h
 }

@@ -72,7 +72,7 @@ func NewServer(watcher *nodeconfig.Watcher, tracker *nodesessions.Tracker) *Serv
 		sessions: make(map[string]*playback.TranscodeSession),
 	}
 	if cfg := watcher.Config(); cfg != nil {
-		if cleaned, err := playback.CleanupOrphanedTranscodeDirs(cfg.Playback.TranscodeDir, nil); err != nil {
+		if cleaned, err := playback.CleanupOrphanedTranscodeDirs(cfg.Playback.TranscodeDir, nil, 0); err != nil {
 			slog.Warn("transcode node cleanup failed", "dir", cfg.Playback.TranscodeDir, "error", err)
 		} else if cleaned > 0 {
 			slog.Info("transcode node cleanup removed orphaned dirs", "dir", cfg.Playback.TranscodeDir, "count", cleaned)

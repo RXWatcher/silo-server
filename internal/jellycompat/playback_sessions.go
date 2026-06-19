@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Silo-Server/silo-server/internal/catalog"
+	"github.com/Silo-Server/silo-server/internal/playback"
 )
 
 // PlaybackSession stores compat-owned playback negotiation state before the
@@ -20,9 +21,14 @@ type PlaybackSession struct {
 	UpstreamSessionID  string
 	UpstreamPlayMethod string
 	TranscodeStarted   bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	ExpiresAt          time.Time
+	// Recipe is the transcode reconstruction descriptor for this session. Jellyfin
+	// clients cannot round-trip a native stream token, so jellycompat carries the
+	// recipe in its own durable compat store (this struct, persisted as JSONB)
+	// rather than in the token. Nil until a transcode actually starts.
+	Recipe    *playback.RecipeCard
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // PlaybackMediaSource stores one negotiated stream source within a compat play session.

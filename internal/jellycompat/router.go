@@ -15,7 +15,6 @@ import (
 
 	"github.com/Silo-Server/silo-server/internal/catalog"
 	"github.com/Silo-Server/silo-server/internal/clientip"
-	"github.com/Silo-Server/silo-server/internal/playback"
 	"github.com/Silo-Server/silo-server/internal/recommendations"
 	"github.com/Silo-Server/silo-server/internal/subtitles"
 )
@@ -98,10 +97,9 @@ func NewRouter(deps Dependencies) chi.Router {
 	}
 	playbackHandler.NodePlanner = deps.NodePlanner
 	playbackHandler.JWTSecret = deps.JWTSecret
-	// Recipe-card store enables compat transcode reconstruct across restarts
-	// (shared Postgres table with the native path). Must be set before the
-	// boot-time orphan cleanup so surviving cards spare their segment dirs.
-	playbackHandler.RecipeStore = playback.NewPostgresRecipeStore(deps.DB)
+	// Compat transcode reconstruct is driven by the recipe carried in the durable
+	// compat playback store (jellycompat_playback_sessions); no separate native
+	// recipe table is needed.
 	if cleaned, err := playbackHandler.CleanupOrphanedTranscodes(); err != nil {
 		slog.Warn("jellycompat transcode cleanup failed", "error", err)
 	} else if cleaned > 0 {
