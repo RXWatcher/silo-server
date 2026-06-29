@@ -5,6 +5,18 @@ import (
 	"strings"
 )
 
+// episodeCatalogSelectBody is the hand-written subquery that hydrates episode
+// rows for the "episode" media scope, aliased "mi" so the shared catalog
+// projection can read it. The `si.type = 'series'` predicate is load-bearing,
+// not cosmetic: episode_libraries (and thus episode_catalog_entries) is
+// populated from every media_files row with a non-null episode_id, including
+// podcast episodes (media_items.type = 'podcast'). Without this guard those
+// non-TV episodes would hydrate into episode-scoped results, e.g. when a
+// library-scoped episode query happens to resolve a podcast/audiobook folder.
+// Restricting hydration to series-parented episodes keeps the episode catalog
+// to genuine TV episodes on every surface (native and Jellyfin-compat). Real
+// TV episodes always hang off a type='series' parent, so this never
+// over-filters legitimate episode sections.
 const episodeCatalogSelectBody = `(
 	SELECT
 		e.content_id,
@@ -63,7 +75,8 @@ const episodeCatalogSelectBody = `(
 	FROM episodes e
 	JOIN media_items si ON si.content_id = e.series_id
 	LEFT JOIN seasons s ON s.content_id = e.season_id
-	WHERE %s
+	WHERE (%s)
+	  AND si.type = 'series'
 ) mi`
 
 const episodeCatalogActiveLibraryExists = `EXISTS (

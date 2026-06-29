@@ -33,11 +33,18 @@ type episodeCatalogUserStatePlan struct {
 }
 
 // applyEpisodeCatalogAccessFilter applies the section access constraints the
-// episode_catalog_entries table supports. The table has no `type` column and
-// only ever holds TV episodes, so the compat audiobook/podcast media-type
-// exclusion is a no-op here; dropping it avoids emitting `ece.type = ANY(...)`
-// against a nonexistent column (SQLSTATE 42703). content_rating filtering is
-// preserved (that column exists).
+// episode_catalog_entries table supports. The table has no `type` column, so
+// the compat audiobook/podcast media-type exclusion cannot be expressed here:
+// emitting `NOT (ece.type = ANY(...))` raised SQLSTATE 42703 and degraded the
+// whole query to empty. The exclusion is therefore dropped on this path.
+//
+// Dropping it is NOT a no-op masquerading as cosmetic: episode_catalog_entries
+// is NOT episodes-of-TV-series only — episode_libraries is populated from any
+// media_files row with a non-null episode_id, so podcast episodes
+// (media_items.type = 'podcast') also land here. What keeps non-TV episodes out
+// of episode-scoped results is library scoping plus the `si.type = 'series'`
+// guard in episodeCatalogSelectBody (hydration), not the media-type clause.
+// content_rating filtering is preserved here (that column exists).
 func applyEpisodeCatalogAccessFilter(access AccessFilter, whereParts *[]string, args *[]any, argIdx *int) {
 	access.ExcludedMediaTypes = nil // access is a value param; caller unaffected
 	ApplySectionAccessFilter("ece", access, whereParts, args, argIdx)
