@@ -1479,6 +1479,13 @@ func (h *ItemsHandler) writeAdjacentEpisodesResponse(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusOK, queryResultDTO{Items: []baseItemDTO{}, TotalRecordCount: 0, StartIndex: 0})
 		return
 	}
+	if target.SeriesID != seriesID {
+		// Malformed request: the AdjacentTo episode belongs to a different series
+		// than the {id} path. Returning that other series' neighbors mislabeled
+		// with this series' ID would be silently wrong, so return an empty page.
+		writeJSON(w, http.StatusOK, queryResultDTO{Items: []baseItemDTO{}, TotalRecordCount: 0, StartIndex: 0})
+		return
+	}
 
 	episodeModels, err := h.episodeRepo.ListAdjacentInSeries(r.Context(), target.SeriesID, target.SeasonNumber, target.EpisodeNumber)
 	if err != nil {

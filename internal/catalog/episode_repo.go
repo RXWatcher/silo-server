@@ -832,9 +832,9 @@ func (r *EpisodeRepository) ListBySeason(ctx context.Context, seriesID string, s
 // series, in natural (season, episode) order. It is the bounded backing query
 // for Jellyfin's AdjacentTo request (Wholphin autoplay/skip): instead of
 // materializing every episode of the series, each neighbor is found with a
-// single index seek on idx_episodes_series (series_id, season_number,
-// episode_number). Neighbors are resolved across season boundaries, so the
-// result is at most three rows.
+// bounded index range scan backed by the episodes_series_season_episode_key
+// UNIQUE index (series_id, season_number, episode_number). Neighbors are
+// resolved across season boundaries, so the result is at most three rows.
 func (r *EpisodeRepository) ListAdjacentInSeries(ctx context.Context, seriesID string, seasonNumber, episodeNumber int) ([]*models.Episode, error) {
 	query := `SELECT ` + episodeColumns + ` FROM (
 		(SELECT ` + episodeColumns + `
