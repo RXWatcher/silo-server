@@ -32,6 +32,17 @@ type episodeCatalogUserStatePlan struct {
 	requireProgressRatio bool
 }
 
+// applyEpisodeCatalogAccessFilter applies the section access constraints the
+// episode_catalog_entries table supports. The table has no `type` column and
+// only ever holds TV episodes, so the compat audiobook/podcast media-type
+// exclusion is a no-op here; dropping it avoids emitting `ece.type = ANY(...)`
+// against a nonexistent column (SQLSTATE 42703). content_rating filtering is
+// preserved (that column exists).
+func applyEpisodeCatalogAccessFilter(access AccessFilter, whereParts *[]string, args *[]any, argIdx *int) {
+	access.ExcludedMediaTypes = nil // access is a value param; caller unaffected
+	ApplySectionAccessFilter("ece", access, whereParts, args, argIdx)
+}
+
 func (e *QueryExecutor) tryEpisodeCatalogUserStatePreviewPage(
 	ctx context.Context,
 	def QueryDefinition,
@@ -84,7 +95,7 @@ func (e *QueryExecutor) tryEpisodeCatalogUserStatePreviewPage(
 		argIdx++
 	}
 
-	ApplySectionAccessFilter("ece", access, &whereParts, &args, &argIdx)
+	applyEpisodeCatalogAccessFilter(access, &whereParts, &args, &argIdx)
 
 	if e.SnapshotAt != nil {
 		whereParts = append(whereParts, fmt.Sprintf("ece.episode_created_at <= $%d", argIdx))
@@ -242,7 +253,7 @@ func (e *QueryExecutor) tryEpisodeCatalogEntriesPreviewPage(
 		argIdx++
 	}
 
-	ApplySectionAccessFilter("ece", access, &whereParts, &args, &argIdx)
+	applyEpisodeCatalogAccessFilter(access, &whereParts, &args, &argIdx)
 
 	if e.SnapshotAt != nil {
 		whereParts = append(whereParts, fmt.Sprintf("ece.episode_created_at <= $%d", argIdx))
