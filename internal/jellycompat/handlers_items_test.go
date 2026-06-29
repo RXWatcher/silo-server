@@ -43,6 +43,18 @@ func (s *countingContentService) GetItemDetail(_ context.Context, _ *Session, co
 	return &upstreamItemDetail{ContentID: contentID}, nil
 }
 
+func (s *countingContentService) GetItemDetailsByIDs(ctx context.Context, session *Session, contentIDs []string, libraryID *int) (map[string]*upstreamItemDetail, error) {
+	out := make(map[string]*upstreamItemDetail, len(contentIDs))
+	for _, id := range contentIDs {
+		detail, err := s.GetItemDetail(ctx, session, id, libraryID)
+		if err != nil || detail == nil {
+			continue
+		}
+		out[id] = detail
+	}
+	return out, nil
+}
+
 func (s *countingContentService) ListUserLibraries(context.Context, *Session) ([]upstreamUserLibrary, error) {
 	panic("unused")
 }

@@ -969,11 +969,15 @@ func (h *ItemsHandler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 		libraryParentID = h.codec.EncodeIntID(EncodedIDLibrary, int64(query.parentLibraryID))
 	}
 
+	var detailsByID map[string]*upstreamItemDetail
+	if query.needsDetailFields {
+		detailsByID = h.batchListItemDetails(r.Context(), session, contentIDs, libraryIDPtr(query.parentLibraryID))
+	}
+
 	items := make([]baseItemDTO, 0, len(result.Items))
 	for _, item := range result.Items {
 		if query.needsDetailFields {
-			detail, detailErr := h.content.GetItemDetail(r.Context(), session, item.ContentID, libraryIDPtr(query.parentLibraryID))
-			if detailErr == nil {
+			if detail, ok := detailsByID[item.ContentID]; ok && detail != nil {
 				h.rememberDetailImages(*detail)
 				dto := h.mapper.itemFromDetailWithFields(*detail, favorites[detail.ContentID], progress[detail.ContentID], query.requestedFields)
 				if libraryParentID != "" {
@@ -1751,6 +1755,30 @@ func (h *ItemsHandler) handleLibraryItem(w http.ResponseWriter, r *http.Request,
 	writeError(w, http.StatusNotFound, "NotFound", "Item not found")
 }
 
+// batchListItemDetails resolves detail payloads for a page of content IDs using
+// the batched content path, falling back to per-item GetItemDetail only if the
+// batch call itself errors. The returned map is keyed by content ID; ids absent
+// from it could not be resolved to a detail and must be rendered from list data
+// by the caller — matching the historical per-item GetItemDetail error → list
+// fallback behavior. Returns nil for an empty input.
+func (h *ItemsHandler) batchListItemDetails(ctx context.Context, session *Session, contentIDs []string, libraryID *int) map[string]*upstreamItemDetail {
+	if len(contentIDs) == 0 {
+		return nil
+	}
+	if details, err := h.content.GetItemDetailsByIDs(ctx, session, contentIDs, libraryID); err == nil {
+		return details
+	}
+	details := make(map[string]*upstreamItemDetail, len(contentIDs))
+	for _, id := range contentIDs {
+		detail, derr := h.content.GetItemDetail(ctx, session, id, libraryID)
+		if derr != nil || detail == nil {
+			continue
+		}
+		details[id] = detail
+	}
+	return details
+}
+
 func (h *ItemsHandler) handleBrowseItems(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery) {
 	result, err := h.content.BrowseItems(r.Context(), session, buildBrowseParams(query))
 	if err != nil {
@@ -1777,11 +1805,15 @@ func (h *ItemsHandler) handleBrowseItems(w http.ResponseWriter, r *http.Request,
 		libraryParentID = h.codec.EncodeIntID(EncodedIDLibrary, int64(query.parentLibraryID))
 	}
 
+	var detailsByID map[string]*upstreamItemDetail
+	if query.needsDetailFields {
+		detailsByID = h.batchListItemDetails(r.Context(), session, contentIDs, libraryIDPtr(query.parentLibraryID))
+	}
+
 	items := make([]baseItemDTO, 0, len(result.Items))
 	for _, item := range result.Items {
 		if query.needsDetailFields {
-			detail, detailErr := h.content.GetItemDetail(r.Context(), session, item.ContentID, libraryIDPtr(query.parentLibraryID))
-			if detailErr == nil {
+			if detail, ok := detailsByID[item.ContentID]; ok && detail != nil {
 				h.rememberDetailImages(*detail)
 				dto := h.mapper.itemFromDetailWithFields(*detail, favorites[detail.ContentID], progress[detail.ContentID], query.requestedFields)
 				if libraryParentID != "" {
@@ -1995,11 +2027,15 @@ func (h *ItemsHandler) handleSearchItems(w http.ResponseWriter, r *http.Request,
 		libraryParentID = h.codec.EncodeIntID(EncodedIDLibrary, int64(query.parentLibraryID))
 	}
 
+	var detailsByID map[string]*upstreamItemDetail
+	if query.needsDetailFields {
+		detailsByID = h.batchListItemDetails(r.Context(), session, contentIDs, libraryIDPtr(query.parentLibraryID))
+	}
+
 	items := make([]baseItemDTO, 0, len(result.Items))
 	for _, item := range result.Items {
 		if query.needsDetailFields {
-			detail, detailErr := h.content.GetItemDetail(r.Context(), session, item.ContentID, libraryIDPtr(query.parentLibraryID))
-			if detailErr == nil {
+			if detail, ok := detailsByID[item.ContentID]; ok && detail != nil {
 				h.rememberDetailImages(*detail)
 				dto := h.mapper.itemFromDetailWithFields(*detail, favorites[detail.ContentID], progress[detail.ContentID], query.requestedFields)
 				if libraryParentID != "" {
@@ -2448,12 +2484,18 @@ func (h *ItemsHandler) upgradeProgressPageToDetail(ctx context.Context, session 
 	if !query.needsDetailFields {
 		return
 	}
-	for i := range page {
-		if i >= maxDetailUpgrades {
-			break
-		}
-		detail, err := h.content.GetItemDetail(ctx, session, page[i].contentID, libraryID)
-		if err != nil {
+	limit := len(page)
+	if limit > maxDetailUpgrades {
+		limit = maxDetailUpgrades
+	}
+	upgradeIDs := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		upgradeIDs = append(upgradeIDs, page[i].contentID)
+	}
+	detailsByID := h.batchListItemDetails(ctx, session, upgradeIDs, libraryID)
+	for i := 0; i < limit; i++ {
+		detail, ok := detailsByID[page[i].contentID]
+		if !ok || detail == nil {
 			continue
 		}
 		h.rememberDetailImages(*detail)

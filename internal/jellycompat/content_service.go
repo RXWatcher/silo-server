@@ -11,6 +11,12 @@ type ContentService interface {
 	BrowseItems(ctx context.Context, session *Session, params url.Values) (*upstreamBrowseResponse, error)
 	SearchItems(ctx context.Context, session *Session, opts SearchItemsOptions) (*upstreamBrowseResponse, error)
 	GetItemDetail(ctx context.Context, session *Session, contentID string, libraryID *int) (*upstreamItemDetail, error)
+	// GetItemDetailsByIDs is the batched form of GetItemDetail for a page of
+	// content IDs. The returned map is keyed by content ID; ids that cannot be
+	// resolved to a detail (excluded media type, access-filtered, not found) are
+	// absent so callers fall back to list-level rendering, exactly as they do on
+	// a per-item GetItemDetail error.
+	GetItemDetailsByIDs(ctx context.Context, session *Session, contentIDs []string, libraryID *int) (map[string]*upstreamItemDetail, error)
 	ListSeasons(ctx context.Context, session *Session, seriesID string, libraryID *int) ([]upstreamSeason, error)
 	GetSeason(ctx context.Context, session *Session, seriesID string, seasonNumber int, libraryID *int) (*upstreamSeason, error)
 	ListEpisodes(ctx context.Context, session *Session, seriesID string, seasonNumber int, libraryID *int) ([]upstreamEpisode, error)
