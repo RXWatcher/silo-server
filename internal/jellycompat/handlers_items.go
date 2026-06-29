@@ -1243,6 +1243,14 @@ func (h *ItemsHandler) HandleEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AdjacentTo (Wholphin autoplay/skip) only needs the requested episode plus
+	// its immediate neighbors. Serve it from a bounded index seek instead of
+	// materializing the whole series, which is multi-second for long soaps.
+	if query.adjacentTo != "" {
+		h.writeAdjacentEpisodesResponse(w, r, session, query, seriesID)
+		return
+	}
+
 	var requestedSeasonID string
 	if rawSeasonID := strings.TrimSpace(newCaseInsensitiveQuery(r.URL.Query()).Get("SeasonId")); rawSeasonID != "" {
 		decodedSeasonID, decodeErr := h.codec.DecodeStringID(EncodedIDSeason, rawSeasonID)
@@ -1269,6 +1277,22 @@ func (h *ItemsHandler) writeSeriesEpisodesResponse(w http.ResponseWriter, r *htt
 		writeCompatUpstreamError(w, err)
 		return
 	}
+
+	episodeModels, err := h.listSeriesEpisodes(r.Context(), session, seriesID, seasons, requestedSeasonID)
+	if err != nil {
+		writeCompatUpstreamError(w, err)
+		return
+	}
+	h.writeEpisodeModelsPage(w, r, session, query, seriesID, seasons, episodeModels, page)
+}
+
+// writeEpisodeModelsPage maps a resolved set of episode models to Jellyfin
+// baseItemDTOs and writes them as an /Items page. It is the shared downstream
+// half of the episode-listing paths: writeSeriesEpisodesResponse feeds it the
+// whole series (or a single season), while writeAdjacentEpisodesResponse feeds
+// it only the bounded prev/self/next window. seasons is used solely for season
+// title/ID hydration; episodeModels carries the rows actually rendered.
+func (h *ItemsHandler) writeEpisodeModelsPage(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery, seriesID string, seasons []upstreamSeason, episodeModels []*models.Episode, page bool) {
 	h.rememberSeasonImages(seasons, seriesID)
 
 	seasonTitleByID := make(map[string]string, len(seasons))
@@ -1280,11 +1304,6 @@ func (h *ItemsHandler) writeSeriesEpisodesResponse(w http.ResponseWriter, r *htt
 		seasonIDByNumber[season.SeasonNumber] = season.ContentID
 	}
 
-	episodeModels, err := h.listSeriesEpisodes(r.Context(), session, seriesID, seasons, requestedSeasonID)
-	if err != nil {
-		writeCompatUpstreamError(w, err)
-		return
-	}
 	sort.SliceStable(episodeModels, func(i, j int) bool {
 		if episodeModels[i] == nil || episodeModels[j] == nil {
 			return episodeModels[i] != nil
@@ -1414,6 +1433,62 @@ func (h *ItemsHandler) writeSeriesEpisodesResponse(w http.ResponseWriter, r *htt
 		TotalRecordCount: total,
 		StartIndex:       startIndex,
 	})
+}
+
+// writeAdjacentEpisodesResponse serves the AdjacentTo case of
+// GET /Shows/{id}/Episodes: it resolves the referenced episode and returns it
+// together with its immediate previous/next neighbors (at most three items,
+// crossing season boundaries) via a bounded index seek. This intentionally
+// returns a prev/self/next window rather than Jellyfin's exact AdjacentTo
+// shape — it satisfies Wholphin's autoplay/skip use without paying the cost of
+// loading and mapping every episode of the series.
+//
+// When the bounded repo path is unavailable (no direct episode repo) or the
+// AdjacentTo id cannot be decoded/resolved, it falls back to the full-series
+// listing so behavior is never worse than before AdjacentTo was honored.
+func (h *ItemsHandler) writeAdjacentEpisodesResponse(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery, seriesID string) {
+	if h.episodeRepo == nil {
+		h.writeSeriesEpisodesResponse(w, r, session, query, seriesID, "", false)
+		return
+	}
+
+	targetContentID, err := decodeItemID(h.codec, query.adjacentTo)
+	if err != nil || targetContentID == "" {
+		h.writeSeriesEpisodesResponse(w, r, session, query, seriesID, "", false)
+		return
+	}
+
+	targets, err := h.episodeRepo.GetByIDs(r.Context(), []string{targetContentID})
+	if err != nil {
+		writeCompatUpstreamError(w, err)
+		return
+	}
+	var target *models.Episode
+	for _, ep := range targets {
+		if ep != nil && ep.ContentID == targetContentID {
+			target = ep
+			break
+		}
+	}
+	if target == nil {
+		// Unknown episode: return an empty page rather than the whole series.
+		writeJSON(w, http.StatusOK, queryResultDTO{Items: []baseItemDTO{}, TotalRecordCount: 0, StartIndex: 0})
+		return
+	}
+
+	episodeModels, err := h.episodeRepo.ListAdjacentInSeries(r.Context(), target.SeriesID, target.SeasonNumber, target.EpisodeNumber)
+	if err != nil {
+		writeCompatUpstreamError(w, err)
+		return
+	}
+
+	seasons, err := h.content.ListSeasons(r.Context(), session, seriesID, nil)
+	if err != nil {
+		writeCompatUpstreamError(w, err)
+		return
+	}
+
+	h.writeEpisodeModelsPage(w, r, session, query, seriesID, seasons, episodeModels, false)
 }
 
 // HandleNextUp serves GET /Shows/NextUp.
