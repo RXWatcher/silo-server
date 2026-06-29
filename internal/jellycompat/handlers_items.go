@@ -1767,7 +1767,10 @@ func (h *ItemsHandler) handleLibraryItem(w http.ResponseWriter, r *http.Request,
 // batch call itself errors. The returned map is keyed by content ID; ids absent
 // from it could not be resolved to a detail and must be rendered from list data
 // by the caller — matching the historical per-item GetItemDetail error → list
-// fallback behavior. Returns nil for an empty input.
+// fallback behavior. Individually-unresolvable ids (e.g. season rows, which the
+// item-detail batch path does not handle) are simply absent and likewise fall
+// back to list rendering rather than a per-item detail fetch. Returns nil for an
+// empty input.
 func (h *ItemsHandler) batchListItemDetails(ctx context.Context, session *Session, contentIDs []string, libraryID *int) map[string]*upstreamItemDetail {
 	if len(contentIDs) == 0 {
 		return nil
