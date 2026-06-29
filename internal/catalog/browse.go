@@ -143,6 +143,14 @@ func (r *BrowseRepository) browse(ctx context.Context, filters BrowseFilters, in
 // MIN(first_seen_at) "added at" semantics of the multi-library GROUP BY path.
 // The reported Total is a lower bound (exact when the page is the whole result),
 // chosen so HasMore remains correct for offset 0.
+//
+// Known limitation vs the exact GROUP BY query, bounded to content_ids that
+// live in 2+ libraries: such a dup is only deduped against the slices actually
+// fetched, so if its true MIN(first_seen_at) library does not rank it in that
+// library's top-Limit, the merge sees only a later first_seen_at and may rank it
+// too recent (or drop it if it is outside top-Limit in every library holding it).
+// This is acceptable for an approximate "recently added" rail; do not reuse this
+// path where exact MIN ranking across libraries is required.
 func (r *BrowseRepository) BrowseRecentlyAddedAcrossLibraries(ctx context.Context, base BrowseFilters, libraryIDs []int) (*BrowseResult, error) {
 	if base.Offset > 0 {
 		return nil, fmt.Errorf("browse recently added across libraries: offset %d unsupported, use BrowsePage", base.Offset)
