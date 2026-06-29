@@ -2065,6 +2065,34 @@ func (h *ItemsHandler) handleResumeResponse(w http.ResponseWriter, r *http.Reque
 		typeSet[strings.ToLower(t)] = true
 	}
 
+	// Fast path: when the native sections subsystem is wired, serve Continue
+	// Watching through the hard-capped continue-watching fetcher instead of
+	// loadProgressPage's unbounded scan. loadProgressPage re-paginates the
+	// entire in-progress list (and re-derives superseded/completed history per
+	// batch) whenever EnableTotalRecordCount=true or the visible count is under
+	// the limit; the fetcher caps scanning at continueProgressMaxScanned and
+	// filters via the indexed home-dismissal index. The native "watching" scope
+	// returns movies+episodes, so we take the fast path whenever the request is
+	// unconstrained OR asks for Movie/Episode (which covers the dominant traffic
+	// — clients overwhelmingly send IncludeItemTypes including Movie+Episode);
+	// loadResumeViaSections applies the IncludeItemTypes set as a post-filter so
+	// narrower requests are still honored. Requests scoped only to types the
+	// watching scope cannot serve (e.g. Series/Season-only) fall through to
+	// loadProgressPage below.
+	if h.sectionsFetcher != nil && (len(typeSet) == 0 || typeSet["episode"] || typeSet["movie"]) {
+		items, total, err := h.loadResumeViaSections(r.Context(), session, query, typeSet)
+		if err == nil {
+			applyImageTypeLimit(items, query.imageTypeLimit)
+			writeJSON(w, http.StatusOK, queryResultDTO{
+				Items:            items,
+				TotalRecordCount: total,
+				StartIndex:       query.startIndex,
+			})
+			return
+		}
+		slog.Warn("jellycompat: resume via sections failed, falling back to progress scan", "error", err)
+	}
+
 	items, total, err := h.loadProgressPage(r.Context(), session, "in_progress", query, typeSet, nil)
 	if err != nil {
 		writeCompatUpstreamError(w, err)
@@ -2076,6 +2104,100 @@ func (h *ItemsHandler) handleResumeResponse(w http.ResponseWriter, r *http.Reque
 		TotalRecordCount: total,
 		StartIndex:       query.startIndex,
 	})
+}
+
+// maxResumeItems caps how many Continue Watching entries the sections fast path
+// returns per request, regardless of the client's requested limit. Resume rows
+// are display surfaces, not bulk exports; clamping keeps the capped fetcher's
+// scan bounded and predictable under load.
+const maxResumeItems = 50
+
+// loadResumeViaSections serves Continue Watching through the native
+// continue-watching fetcher. The fetcher applies the same dismissal and
+// superseded-episode filtering as FilterResumeProgress, so visible parity with
+// loadProgressPage is preserved, but scanning is hard-capped. Next-up injection
+// is suppressed (Resume must stay in-progress-only) and the resolved items are
+// re-hydrated through the shared progress path so episode DTOs keep their
+// SeriesId/IndexNumber/SeasonId targeting — metadata the section list mapping
+// (which discards SectionItemMeta) would drop.
+func (h *ItemsHandler) loadResumeViaSections(ctx context.Context, session *Session, query itemsQuery, typeSet map[string]bool) ([]baseItemDTO, int, error) {
+	pageSize := query.limit
+	if pageSize <= 0 {
+		pageSize = maxResumeItems
+	}
+	if pageSize > maxResumeItems {
+		pageSize = maxResumeItems
+	}
+
+	// FetchOne always scans from offset 0; over-fetch by StartIndex so a deep
+	// page can be sliced out of the capped result (Resume is normally offset 0).
+	fetchLimit := pageSize + query.startIndex
+
+	filter := h.resolveAccessFilter(ctx, session)
+	resolved := sections.ResolvedSection{
+		ID:             "compat-resume",
+		SectionType:    sections.SectionContinueWatching,
+		Title:          "Continue Watching",
+		ItemLimit:      fetchLimit,
+		Config:         sections.ContinueTypeConfig(sections.ContinueTypeWatching),
+		SuppressNextUp: true,
+	}
+
+	result, err := h.sectionsFetcher.FetchOne(ctx, resolved, nil, filter.AllowedLibraryIDs, session.StreamAppUserID, session.ProfileID, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	entries := make([]upstreamProgress, 0, len(result.Items))
+	for _, mi := range result.Items {
+		if mi == nil {
+			continue
+		}
+		meta := result.ItemMeta[mi.ContentID]
+		// Defensive: only in-progress resume points belong on the Resume row.
+		// SuppressNextUp already prevents next-up injection upstream; this
+		// guards against any other source slipping in.
+		if meta.ItemSource != "" && meta.ItemSource != "in_progress" {
+			continue
+		}
+		// Honor IncludeItemTypes the same way loadProgressPage does. The
+		// watching scope only emits movies/episodes, so this trims to a narrower
+		// request (e.g. Movie-only); applying it before the StartIndex slice and
+		// the page cap keeps paging correct.
+		if len(typeSet) > 0 && !typeSet[strings.ToLower(mi.Type)] {
+			continue
+		}
+		entry := upstreamProgress{MediaItemID: mi.ContentID}
+		if meta.PositionSeconds != nil {
+			entry.PositionSeconds = *meta.PositionSeconds
+		}
+		if meta.DurationSeconds != nil {
+			entry.DurationSeconds = *meta.DurationSeconds
+		}
+		if meta.ProgressUpdatedAt != nil {
+			entry.UpdatedAt = *meta.ProgressUpdatedAt
+		}
+		entries = append(entries, entry)
+	}
+
+	// Slice out the requested page from the capped, ordered result.
+	if query.startIndex > 0 {
+		if query.startIndex >= len(entries) {
+			entries = nil
+		} else {
+			entries = entries[query.startIndex:]
+		}
+	}
+	if len(entries) > pageSize {
+		entries = entries[:pageSize]
+	}
+
+	hydrated, err := h.hydrateProgressItems(ctx, session, entries, query.requestedFields, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	dtos := h.finishProgressPage(ctx, session, hydrated, query, nil)
+	return dtos, len(dtos), nil
 }
 
 type progressHydratedItem struct {
