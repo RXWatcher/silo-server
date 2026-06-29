@@ -2290,6 +2290,17 @@ type progressHydratedItem struct {
 // absurd client limits — normal Resume/NextUp requests are 20-40 items.
 const maxDetailUpgrades = 100
 
+// sortedTypeSet returns the (already lowercased) keys of a type set in a stable
+// order so the SQL pre-filter binds a deterministic types array.
+func sortedTypeSet(typeSet map[string]bool) []string {
+	keys := make([]string, 0, len(typeSet))
+	for k := range typeSet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (h *ItemsHandler) loadProgressPage(ctx context.Context, session *Session, status string, query itemsQuery, typeSet map[string]bool, libraryID *int) ([]baseItemDTO, int, error) {
 	// Resume views hide dismissed and superseded entries, so the visible list
 	// is sparser than the raw store list. The raw-offset fast path below is
@@ -2343,12 +2354,31 @@ func (h *ItemsHandler) loadProgressPage(ctx context.Context, session *Session, s
 		batchSize = 48
 	}
 
+	// Push the type/library predicate into SQL for the completed (watched-items)
+	// path: the store filters before paging, so the scan reads only matching
+	// rows instead of the profile's entire completed history. The in-memory type
+	// check below and the library-scoped hydration stay as a correctness
+	// backstop (access/parental exclusions still apply). The in_progress path is
+	// deliberately left on ListProgress — its FilterResumeProgress hiding makes
+	// the visible set sparser than any SQL pre-filter could express.
+	useFilteredFetch := status == "completed" && (len(typeSet) > 0 || libraryID != nil)
+	var filteredTypes []string
+	if useFilteredFetch {
+		filteredTypes = sortedTypeSet(typeSet)
+	}
+	fetchProgress := func(off int) ([]upstreamProgress, error) {
+		if useFilteredFetch {
+			return h.userData.ListProgressFiltered(ctx, session, status, filteredTypes, libraryID, batchSize, off)
+		}
+		return h.userData.ListProgress(ctx, session, status, batchSize, off)
+	}
+
 	items := make([]progressHydratedItem, 0, query.limit)
 	matchedCount := 0
 	offset := 0
 
 	for {
-		progressEntries, err := h.userData.ListProgress(ctx, session, status, batchSize, offset)
+		progressEntries, err := fetchProgress(offset)
 		if err != nil {
 			return nil, 0, err
 		}

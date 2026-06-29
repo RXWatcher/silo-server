@@ -68,6 +68,10 @@ func (m *mockUserDataService) ListProgress(context.Context, *Session, string, in
 	panic("unused")
 }
 
+func (m *mockUserDataService) ListProgressFiltered(context.Context, *Session, string, []string, *int, int, int) ([]upstreamProgress, error) {
+	panic("unused")
+}
+
 func (m *mockUserDataService) FilterResumeProgress(_ context.Context, _ *Session, entries []upstreamProgress) ([]upstreamProgress, error) {
 	return entries, nil
 }

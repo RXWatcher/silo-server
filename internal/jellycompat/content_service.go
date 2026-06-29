@@ -35,6 +35,11 @@ type UserDataService interface {
 	AddFavorite(ctx context.Context, session *Session, contentID string) error
 	RemoveFavorite(ctx context.Context, session *Session, contentID string) error
 	ListProgress(ctx context.Context, session *Session, status string, limit, offset int) ([]upstreamProgress, error)
+	// ListProgressFiltered narrows a progress status page to the requested item
+	// types and/or library, pushing the predicate into SQL so the watched-items
+	// path no longer scans the profile's entire completed set. Callers still
+	// apply access/parental exclusions over the hydrated rows.
+	ListProgressFiltered(ctx context.Context, session *Session, status string, types []string, libraryID *int, limit, offset int) ([]upstreamProgress, error)
 	// FilterResumeProgress drops in-progress entries that Continue Watching
 	// surfaces should hide: entries the user dismissed from the row and
 	// episodes superseded by a later-completed episode in the same series.
