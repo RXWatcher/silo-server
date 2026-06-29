@@ -28,6 +28,7 @@ type LibraryPosterPresigner interface {
 // substitute a stub without standing up a Postgres pool.
 type browseSource interface {
 	BrowsePage(ctx context.Context, filters catalog.BrowseFilters, includeTotal bool) (*catalog.BrowseResult, error)
+	BrowseRecentlyAddedAcrossLibraries(ctx context.Context, base catalog.BrowseFilters, libraryIDs []int) (*catalog.BrowseResult, error)
 	ListGenres(ctx context.Context, filters catalog.BrowseFilters) ([]string, error)
 }
 
@@ -264,18 +265,7 @@ func clampMaxContentRating(existing, requested string) string {
 func (s *directContentService) ListUserLibraries(ctx context.Context, session *Session) ([]upstreamUserLibrary, error) {
 	filter := s.resolveFilter(ctx, session)
 
-	var folders []*models.MediaFolder
-	var err error
-	if filter.AllowedLibraryIDs != nil {
-		// A non-nil allowlist means the viewer is restricted; an empty
-		// allowlist grants access to no libraries at all.
-		if len(filter.AllowedLibraryIDs) == 0 {
-			return []upstreamUserLibrary{}, nil
-		}
-		folders, err = s.folderRepo.ListByIDs(ctx, filter.AllowedLibraryIDs)
-	} else {
-		folders, err = s.folderRepo.GetEnabled(ctx)
-	}
+	folders, err := s.accessibleFolders(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("list libraries: %w", err)
 	}
@@ -313,6 +303,43 @@ func (s *directContentService) ListUserLibraries(ctx context.Context, session *S
 		libraries = append(libraries, lib)
 	}
 	return libraries, nil
+}
+
+// accessibleFolders resolves the media folders the viewer may browse, honoring
+// the allowlist semantics shared by the library and browse endpoints. A nil
+// AllowedLibraryIDs means unrestricted (all enabled libraries); a non-nil but
+// empty allowlist grants access to no libraries at all.
+func (s *directContentService) accessibleFolders(ctx context.Context, filter catalog.AccessFilter) ([]*models.MediaFolder, error) {
+	if filter.AllowedLibraryIDs != nil {
+		if len(filter.AllowedLibraryIDs) == 0 {
+			return nil, nil
+		}
+		return s.folderRepo.ListByIDs(ctx, filter.AllowedLibraryIDs)
+	}
+	return s.folderRepo.GetEnabled(ctx)
+}
+
+// accessibleLibraryIDs resolves the library IDs the viewer may browse, applying
+// the same allowlist/disabled-list semantics as ListUserLibraries. It is used to
+// fan a no-parentId recently_added browse into one fast single-library query per
+// library.
+func (s *directContentService) accessibleLibraryIDs(ctx context.Context, filter catalog.AccessFilter) ([]int, error) {
+	folders, err := s.accessibleFolders(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	disabled := make(map[int]struct{}, len(filter.DisabledLibraryIDs))
+	for _, id := range filter.DisabledLibraryIDs {
+		disabled[id] = struct{}{}
+	}
+	ids := make([]int, 0, len(folders))
+	for _, f := range folders {
+		if _, ok := disabled[f.ID]; ok {
+			continue
+		}
+		ids = append(ids, f.ID)
+	}
+	return ids, nil
 }
 
 func (s *directContentService) BrowseItems(ctx context.Context, session *Session, params url.Values) (*upstreamBrowseResponse, error) {
@@ -356,6 +383,27 @@ func (s *directContentService) BrowseItems(ctx context.Context, session *Session
 		RequireBackdrop:    parseBool(params.Get("require_backdrop"), false),
 	}
 
+	// A no-parentId recently_added browse (the /Items/Latest hot path) would
+	// otherwise run a multi-library MIN(first_seen_at) + GROUP BY scan over the
+	// whole catalog. Fan it into one fast single-library index walk per library
+	// and merge in memory instead. Only offset 0 is served this way; deeper
+	// pages fall back to the multi-library query below.
+	crossLibraryRecentlyAdded := filters.Sort == "recently_added" && filters.LibraryID == 0
+	var crossLibraryIDs []int
+	if crossLibraryRecentlyAdded {
+		ids, err := s.accessibleLibraryIDs(ctx, filter)
+		if err != nil {
+			return nil, fmt.Errorf("browse items: %w", err)
+		}
+		// With 0 or 1 accessible libraries the single multi-library query is
+		// already the fast path, so leave behavior unchanged.
+		if len(ids) >= 2 {
+			crossLibraryIDs = ids
+		} else {
+			crossLibraryRecentlyAdded = false
+		}
+	}
+
 	var collected []upstreamListItem
 	totalFromCatalog := 0
 	totalKnown := false
@@ -368,7 +416,15 @@ func (s *directContentService) BrowseItems(ctx context.Context, session *Session
 
 	for len(collected) < requestedLimit && scannedRows < maxScannedRows {
 		wantTotal := includeTotal && !totalKnown
-		result, err := s.browseRepo.BrowsePage(ctx, filters, wantTotal)
+		var result *catalog.BrowseResult
+		var err error
+		if crossLibraryRecentlyAdded && filters.Offset == 0 {
+			// The merge helper returns a Total/HasMore consistent with offset 0,
+			// so wantTotal is satisfied without the expensive cross-library count.
+			result, err = s.browseRepo.BrowseRecentlyAddedAcrossLibraries(ctx, filters, crossLibraryIDs)
+		} else {
+			result, err = s.browseRepo.BrowsePage(ctx, filters, wantTotal)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("browse items: %w", err)
 		}
