@@ -121,7 +121,27 @@ const (
 )
 
 // Degradation warning codes reported by playback plans.
-const DegradationWarningHDRToneMappedV3 = "hdr_tone_mapped"
+const (
+	DegradationWarningHDRToneMappedV3 = "hdr_tone_mapped"
+	// A carried-over audio selection is not on the effective file, so the plan
+	// plays the file's default audio track instead of refusing to start.
+	DegradationWarningAudioTrackUnavailableV3 = "audio_track_unavailable"
+	// A carried-over subtitle selection has no equivalent on the effective
+	// file, so the plan starts with subtitles off instead of refusing to start.
+	DegradationWarningSubtitleTrackUnavailableV3 = "subtitle_track_unavailable"
+)
+
+// AudioTrackUnavailableWarningV3 reports an audio selection that fell back to
+// the file's default track.
+func AudioTrackUnavailableWarningV3() DegradationWarningV3 {
+	return DegradationWarningV3{Code: DegradationWarningAudioTrackUnavailableV3, Message: "The selected audio track is not on this file; playing its default instead."}
+}
+
+// SubtitleTrackUnavailableWarningV3 reports a subtitle selection that was
+// dropped because the effective file has no equivalent track.
+func SubtitleTrackUnavailableWarningV3() DegradationWarningV3 {
+	return DegradationWarningV3{Code: DegradationWarningSubtitleTrackUnavailableV3, Message: "The selected subtitle track is not on this file; starting without it."}
+}
 
 // ServerFeaturesV3 returns the complete feature set advertised by protocol-v3
 // capability and decision responses. A fresh slice prevents callers from

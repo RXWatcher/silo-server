@@ -206,7 +206,7 @@ constant:
 | Field | Omitted | Present |
 | --- | --- | --- |
 | `start_position` | The profile's saved resume point for this item, or `0` when there is none, it is already complete, or the file is one part of a multipart item (every part shares the item's resume point, so a part-local seek to it would land somewhere arbitrary). It is required when `progress_persistence` is `client` | Exactly that position. `0` means *start over* |
-| `audio_track_id` / `audio_track_index` | The profile's preferred audio track, resolved from the series preference, then the profile's audio-language setting, then the library override | Exactly that track |
+| `audio_track_id` / `audio_track_index` | The profile's preferred audio track, resolved from the series preference, then the profile's audio-language setting, then the library override | Exactly that track. When the file has no track at that index (a selection carried over from another episode or version), the file's default track plays and the plan carries `audio_track_unavailable` |
 
 `progress_persistence` separates the live session clock from durable resume
 ownership. Omission (or `server`) means session progress may update the item's
@@ -970,9 +970,14 @@ Failure, seek, and quality replans may omit unchanged track identities. The
 server overlays only identities present in those requests and preserves the
 durable selected subtitle otherwise. Only `operation: "track_change"` gives an
 omitted `selected_tracks.subtitle` the explicit meaning "subtitles off". A
-fallback to another media version must remap the selected subtitle; if no
-equivalent exists, it returns terminal reason `subtitle_unavailable_in_version`
-instead of silently continuing with subtitles off.
+fallback to another media version must remap the selected subtitle. It
+prefers a version with an equivalent track; when none has one, playback
+continues with subtitles off and the plan carries `subtitle_track_unavailable`
+rather than ending in a terminal. A selection the effective file cannot honour
+on a direct start degrades the same way. An output refresh that would have to
+drop the subtitle stays on the version already playing. Malformed selections (a
+track identity that does not parse or names another file, or a negative index)
+are still rejected.
 
 `local_mutations` (up to 8 entries, 64 chars each) reports client-side
 adjustments — a transport reopen, a PCM decode fallback — that change the
@@ -1211,6 +1216,8 @@ The plan will play, but something the user might notice was given up.
 | `quality_preference_normalized` | Unknown `quality_preference` normalized to `auto` |
 | `bandwidth_cap_applied` | `bandwidth_cap_kbps` limited the selection |
 | `evidence_insufficient_for_direct` | Evidence tier blocked a direct route |
+| `audio_track_unavailable` | The selected audio track is not on the effective file; its default track plays |
+| `subtitle_track_unavailable` | The selected subtitle has no equivalent on the effective file; playback starts with subtitles off |
 
 ### 7.3 Terminal reasons
 
