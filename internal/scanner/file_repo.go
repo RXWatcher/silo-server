@@ -969,7 +969,20 @@ func (r *FileRepository) Upsert(ctx context.Context, mf models.MediaFile) (*mode
 		mf.MissingSince,
 	)
 
-	return scanMediaFile(row)
+	saved, err := scanMediaFile(row)
+	if err != nil {
+		return nil, err
+	}
+	if len(mf.MusicTags) > 0 {
+		tagsJSON, err := json.Marshal(mf.MusicTags)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling music tags: %w", err)
+		}
+		if _, err := r.pool.Exec(ctx, `INSERT INTO music_file_tags (media_file_id, tags) VALUES ($1, $2) ON CONFLICT (media_file_id) DO UPDATE SET tags = EXCLUDED.tags, updated_at = NOW()`, saved.ID, tagsJSON); err != nil {
+			return nil, fmt.Errorf("persisting music tags: %w", err)
+		}
+	}
+	return saved, nil
 }
 
 type ChapterThumbnailFailureState struct {

@@ -104,10 +104,13 @@ type MediaFile struct {
 	MultiEpisodeEnd              int
 	ProbeSource                  string // arrs, local
 	ProbeUpdatedAt               *time.Time
-	MatchAttemptedAt             *time.Time
-	MissingSince                 *time.Time
-	CreatedAt                    time.Time
-	UpdatedAt                    time.Time
+	// MusicTags are ffprobe format tags persisted separately from the generic file row.
+	// They are populated only from the file itself, never inferred from its path.
+	MusicTags        map[string]string
+	MatchAttemptedAt *time.Time
+	MissingSince     *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // MediaChapter represents a single media chapter derived from embedded file metadata.

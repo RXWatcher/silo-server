@@ -2700,6 +2700,7 @@ func identityEvidenceEqual(existing, expected []byte) bool {
 }
 
 func applyProbeData(mf *models.MediaFile, probe *ProbeData, probeSource string) {
+	mf.MusicTags = probe.FormatTags
 	mf.CodecVideo = probe.CodecVideo
 	mf.CodecAudio = probe.CodecAudio
 	mf.Resolution = probe.Resolution
