@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -11,8 +12,62 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Retry parameters for the bulk-reset UPDATEs below. They run concurrently
+// with per-item writes from ordinary metadata refresh jobs touching the same
+// tables (media_items, media_files) in a different row order, which is a real,
+// observed deadlock source (SQLSTATE 40P01) — not a hypothetical one.
+var (
+	artworkReconcileDeadlockMaxAttempts = 5
+	artworkReconcileDeadlockBaseBackoff = 100 * time.Millisecond
+)
+
+// artworkReconcileBulkBatchSize bounds how many rows one bulk-reset statement
+// touches.
+//
+// These resets were originally single full-table UPDATEs. On a large library
+// that is one statement holding row locks on every matching row for as long as
+// it runs — an observed 1h51m on media_items, during which 12 of 16 pool
+// connections sat blocked behind it and ordinary playback/metadata writes
+// stalled. Retrying on deadlock (above) treats the symptom; the lock footprint
+// is the cause.
+//
+// Batching bounds that footprint: each statement locks at most this many rows
+// and commits, so concurrent writers interleave instead of queueing behind a
+// table-wide writer. The loop is self-terminating because both SET clauses
+// falsify the predicate that selected the row — resetSet writes the provider
+// URL into pathCol (which cachedPredicate excludes via NOT LIKE '%://%'), and
+// clearSet empties it.
+const artworkReconcileBulkBatchSize = 5000
+
+// retryOnDeadlock runs op, retrying when Postgres reports a deadlock (40P01)
+// or serialization failure (40001), with exponential backoff. It returns
+// immediately for any other error, and honors context cancellation between
+// attempts.
+func retryOnDeadlock(ctx context.Context, op func() error) error {
+	backoff := artworkReconcileDeadlockBaseBackoff
+	for attempt := 1; ; attempt++ {
+		err := op()
+		if err == nil {
+			return nil
+		}
+		var pgErr *pgconn.PgError
+		if attempt < artworkReconcileDeadlockMaxAttempts && errors.As(err, &pgErr) &&
+			(pgErr.Code == "40P01" || pgErr.Code == "40001") {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			continue
+		}
+		return err
+	}
+}
 
 // ArtworkObjectChecker is the S3 surface the reconciler needs: existence
 // checks against the public asset bucket. Satisfied by *s3client.Client.
@@ -729,29 +784,71 @@ func (r *ArtworkCacheReconciler) objectExistsWithRetry(ctx context.Context, buck
 // owning pipeline can refill them.
 func (r *ArtworkCacheReconciler) bulkResetSurface(ctx context.Context, s artworkSweepSurface, stats *ArtworkReconcileStats) error {
 	if s.sourceCol != "" {
-		requeue := fmt.Sprintf(
-			`UPDATE %s SET %s WHERE %s AND %s`,
-			s.table, s.resetSet(), s.cachedPredicate(), s.remoteSourcePredicate(),
-		)
-		tag, err := r.pool.Exec(ctx, requeue)
+		requeued, err := r.bulkUpdateInBatches(ctx, s, s.resetSet(),
+			fmt.Sprintf(`%s AND %s`, s.cachedPredicate(), s.remoteSourcePredicate()))
 		if err != nil {
 			return fmt.Errorf("artwork reconcile: bulk reset %s: %w", s.name, err)
 		}
-		stats.Requeued += int(tag.RowsAffected())
-		stats.Checked += int(tag.RowsAffected())
+		stats.Requeued += requeued
+		stats.Checked += requeued
 	}
 
-	clearSQL := fmt.Sprintf(
-		`UPDATE %s SET %s WHERE %s AND NOT (%s)`,
-		s.table, s.clearSet, s.cachedPredicate(), s.remoteSourcePredicate(),
-	)
-	tag, err := r.pool.Exec(ctx, clearSQL)
+	cleared, err := r.bulkUpdateInBatches(ctx, s, s.clearSet,
+		fmt.Sprintf(`%s AND NOT (%s)`, s.cachedPredicate(), s.remoteSourcePredicate()))
 	if err != nil {
 		return fmt.Errorf("artwork reconcile: bulk clear %s: %w", s.name, err)
 	}
-	stats.Cleared += int(tag.RowsAffected())
-	stats.Checked += int(tag.RowsAffected())
+	stats.Cleared += cleared
+	stats.Checked += cleared
 	return nil
+}
+
+// bulkUpdateInBatches applies setClause to every row of s matching where, in
+// batches of artworkReconcileBulkBatchSize, and returns the total row count.
+//
+// Each batch selects its slice through the surface's unique key order and takes
+// row locks with FOR UPDATE before updating. The consistent ordering is what
+// keeps concurrent batches from deadlocking against each other; retryOnDeadlock
+// still covers deadlocks against unrelated writers using a different order.
+// SKIP LOCKED is deliberately NOT used — skipping a contended row would end the
+// loop early and silently leave rows unreset.
+//
+// Callers must pass a where whose rows stop matching once setClause is applied,
+// or this loops forever. Both callers above satisfy that; see the comment on
+// artworkReconcileBulkBatchSize.
+func (r *ArtworkCacheReconciler) bulkUpdateInBatches(ctx context.Context, s artworkSweepSurface, setClause, where string) (int, error) {
+	keyCols := strings.Join(s.keyColumnNames(), ", ")
+	stmt := fmt.Sprintf(`
+		WITH batch AS (
+			SELECT %[1]s FROM %[2]s
+			WHERE %[3]s
+			ORDER BY %[1]s
+			LIMIT %[4]d
+			FOR UPDATE
+		)
+		UPDATE %[2]s SET %[5]s
+		WHERE (%[1]s) IN (SELECT %[1]s FROM batch)`,
+		keyCols, s.table, where, artworkReconcileBulkBatchSize, setClause,
+	)
+
+	total := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		var rows int64
+		if err := retryOnDeadlock(ctx, func() error {
+			tag, err := r.pool.Exec(ctx, stmt)
+			rows = tag.RowsAffected()
+			return err
+		}); err != nil {
+			return total, err
+		}
+		if rows == 0 {
+			return total, nil
+		}
+		total += int(rows)
+	}
 }
 
 // sweptRow is one candidate row in the per-row verification sweep.
@@ -949,27 +1046,51 @@ func (r *ArtworkCacheReconciler) countChapterThumbnailFiles(ctx context.Context)
 }
 
 func (r *ArtworkCacheReconciler) bulkResetChapterThumbnails(ctx context.Context, stats *ArtworkReconcileStats) error {
-	tag, err := r.pool.Exec(ctx, `
+	// Batched for the same reason as bulkUpdateInBatches: unbatched, this locks
+	// every media_files row with chapter thumbnails for the whole run, and the
+	// per-row jsonb_agg rebuild makes it slow. Self-terminating because the SET
+	// empties thumbnail_path on every element the predicate looks for.
+	stmt := `
+		WITH batch AS (
+			SELECT id FROM media_files
+			WHERE ` + chapterThumbnailFilesPredicate + `
+			ORDER BY id
+			LIMIT ` + strconv.Itoa(artworkReconcileBulkBatchSize) + `
+			FOR UPDATE
+		)
 		UPDATE media_files
-		SET chapters = (
-			SELECT jsonb_agg(
-				CASE WHEN coalesce(e->>'thumbnail_path', '') <> ''
-					THEN (e - 'thumbnail_retry_after' - 'thumbnail_failed_at' - 'thumbnail_last_error')
-						|| '{"thumbnail_path": "", "thumbnail_thumbhash": ""}'::jsonb
-					ELSE e
-				END
-				ORDER BY ord
-			)
-			FROM jsonb_array_elements(chapters) WITH ORDINALITY AS t(e, ord)
-		),
-		chapter_thumbnail_retry_after = NULL
-		WHERE `+chapterThumbnailFilesPredicate)
-	if err != nil {
-		return fmt.Errorf("artwork reconcile: bulk clearing chapter thumbnails: %w", err)
+			SET chapters = (
+				SELECT jsonb_agg(
+					CASE WHEN coalesce(e->>'thumbnail_path', '') <> ''
+						THEN (e - 'thumbnail_retry_after' - 'thumbnail_failed_at' - 'thumbnail_last_error')
+							|| '{"thumbnail_path": "", "thumbnail_thumbhash": ""}'::jsonb
+						ELSE e
+					END
+					ORDER BY ord
+				)
+				FROM jsonb_array_elements(chapters) WITH ORDINALITY AS t(e, ord)
+			),
+			chapter_thumbnail_retry_after = NULL
+			WHERE id IN (SELECT id FROM batch)`
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var rows int64
+		if err := retryOnDeadlock(ctx, func() error {
+			tag, execErr := r.pool.Exec(ctx, stmt)
+			rows = tag.RowsAffected()
+			return execErr
+		}); err != nil {
+			return fmt.Errorf("artwork reconcile: bulk clearing chapter thumbnails: %w", err)
+		}
+		if rows == 0 {
+			return nil
+		}
+		stats.Cleared += int(rows)
+		stats.Checked += int(rows)
 	}
-	stats.Cleared += int(tag.RowsAffected())
-	stats.Checked += int(tag.RowsAffected())
-	return nil
 }
 
 // chapterFileRow is one media_files row in the chapter thumbnail sweep.

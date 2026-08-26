@@ -14,11 +14,19 @@ import (
 
 const (
 	cacheMetadataImagesIntervalMs = int64(60 * 1000)
-	// Claim only work that can start immediately. Claiming a large queue page
-	// stamps one lease on every row up front; with two workers, the unstarted
-	// tail could expire and be reclaimed before this execution reaches it.
-	cacheMetadataImagesClaimLimit = 2
-	cacheMetadataImagesWorkers    = 2
+	// processClaimedJobs dispatches this claimed page through a concurrency-
+	// bounded semaphore: as soon as one of the cacheMetadataImagesWorkers
+	// slots frees up, it immediately picks up the next already-claimed job
+	// in this page, so a page much larger than the worker count keeps the
+	// pool continuously saturated instead of blocking on RunOnce's wg.Wait()
+	// for every straggler in a page-sized-to-worker-count batch before the
+	// next page can even be claimed. The lease stamped on claim
+	// (imageCacheLeaseDuration, 15 minutes) is the real ceiling: at
+	// cacheMetadataImagesWorkers concurrent workers, a page this size drains
+	// in low tens of seconds even at several seconds per job, leaving over
+	// an order of magnitude of margin before any unstarted tail could expire.
+	cacheMetadataImagesClaimLimit = 480
+	cacheMetadataImagesWorkers    = 48
 	cacheMetadataImagesMaxRuntime = 10 * time.Minute
 )
 
