@@ -1363,6 +1363,32 @@ func TestScanEbookBuildMediaFileSetsCorePersistenceFields(t *testing.T) {
 	}
 }
 
+func TestBuildEbookMediaFileAfterCoverAttemptKeepsFailuresRetryable(t *testing.T) {
+	modifiedAt := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC)
+	folder := &models.MediaFolder{ID: 44}
+	book := &parsedEbook{Title: "Book", Format: "epub"}
+	groupKey := ebookContentGroupKey(book, "/library/Book.epub")
+
+	failed := buildEbookMediaFileAfterCoverAttempt(folder, "content-1", "/library/Book.epub", 1234, modifiedAt, book, groupKey, errors.New("object storage unavailable"))
+	if failed.GroupKeyVersion != ebookGroupKeyVersion-1 {
+		t.Fatalf("failed cover GroupKeyVersion = %d, want retry marker %d", failed.GroupKeyVersion, ebookGroupKeyVersion-1)
+	}
+
+	succeeded := buildEbookMediaFileAfterCoverAttempt(folder, "content-1", "/library/Book.epub", 1234, modifiedAt, book, groupKey, nil)
+	if succeeded.GroupKeyVersion != ebookGroupKeyVersion {
+		t.Fatalf("successful cover GroupKeyVersion = %d, want %d", succeeded.GroupKeyVersion, ebookGroupKeyVersion)
+	}
+}
+
+func TestEbookGroupKeyRepairDoesNotRequeueRemoteEnrichment(t *testing.T) {
+	if shouldEnqueueEbookEnrichment(true) {
+		t.Fatal("group-key repair should not requeue remote ebook enrichment")
+	}
+	if !shouldEnqueueEbookEnrichment(false) {
+		t.Fatal("ordinary ebook reconciliation should queue remote enrichment")
+	}
+}
+
 func TestApplyEbookLocalCoverCachesEmbeddedAndSetsPoster(t *testing.T) {
 	cacher := &fakeEbookCoverCacher{}
 	updater := &fakeEbookMetadataUpdater{}

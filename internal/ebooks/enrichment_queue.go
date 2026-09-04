@@ -118,7 +118,11 @@ const mergeEbookProtectedFieldsSQL = `
 	ARRAY(
 		SELECT DISTINCT field
 		FROM unnest(
-			ebook_enrichment_state.protected_fields ||
+			ARRAY(
+				SELECT existing_field
+				FROM unnest(ebook_enrichment_state.protected_fields) AS existing_field
+				WHERE existing_field NOT IN ('poster_path', 'backdrop_path', 'logo_path')
+			) ||
 			ARRAY(
 				SELECT candidate
 				FROM unnest(EXCLUDED.protected_fields) AS candidate

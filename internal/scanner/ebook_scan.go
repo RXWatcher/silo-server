@@ -496,7 +496,7 @@ func (s *Scanner) reconcileEbookFile(ctx context.Context, folder *models.MediaFo
 		}
 	}
 
-	existingContentID, isUnchanged, skipErr := s.ebookFileShouldSkip(ctx, folder, filePath, size, modifiedAt)
+	existingContentID, isUnchanged, groupKeyRepair, skipErr := s.ebookFileShouldSkip(ctx, folder, filePath, size, modifiedAt)
 	if skipErr != nil {
 		slog.WarnContext(ctx, "ebook scan: skip-check failed, falling through", "component", "scanner",
 			"folder_id", folder.ID,
@@ -540,15 +540,16 @@ func (s *Scanner) reconcileEbookFile(ctx context.Context, folder *models.MediaFo
 	if err != nil {
 		return fmt.Errorf("upsert ebook item: %w", err)
 	}
-	if err := s.upsertEbookMediaFile(ctx, folder, contentID, filePath, size, modifiedAt, &parsed, groupKey); err != nil {
+	coverErr := applyEbookLocalCover(ctx, s.itemRepo, s.imageCacher, contentID, filePath, &parsed)
+	if err := s.upsertEbookMediaFileAfterCoverAttempt(ctx, folder, contentID, filePath, size, modifiedAt, &parsed, groupKey, coverErr); err != nil {
 		return fmt.Errorf("upsert ebook file: %w", err)
 	}
-	if err := applyEbookLocalCover(ctx, s.itemRepo, s.imageCacher, contentID, filePath, &parsed); err != nil {
+	if coverErr != nil {
 		slog.WarnContext(ctx, "ebook scan: local cover upload failed", "component", "scanner",
 			"folder_id", folder.ID,
 			"content_id", contentID,
 			"path", filePath,
-			"error", err,
+			"error", coverErr,
 		)
 	}
 	if err := s.upsertEbookPeople(ctx, contentID, &parsed, curated); err != nil {
@@ -565,8 +566,10 @@ func (s *Scanner) reconcileEbookFile(ctx context.Context, folder *models.MediaFo
 			return fmt.Errorf("upsert ebook ISBN provider id: %w", err)
 		}
 	}
-	if err := s.enqueueEbookEnrichment(ctx, contentID); err != nil {
-		return fmt.Errorf("enqueue ebook enrichment: %w", err)
+	if shouldEnqueueEbookEnrichment(groupKeyRepair) {
+		if err := s.enqueueEbookEnrichment(ctx, contentID); err != nil {
+			return fmt.Errorf("enqueue ebook enrichment: %w", err)
+		}
 	}
 	s.autoLinkLiteraryWork(ctx, contentID)
 	slog.InfoContext(ctx, "ebook scan: indexed", "component", "scanner",
@@ -594,6 +597,10 @@ func (s *Scanner) enqueueEbookEnrichment(ctx context.Context, contentID string) 
 		)
 	}
 	return nil
+}
+
+func shouldEnqueueEbookEnrichment(groupKeyRepair bool) bool {
+	return !groupKeyRepair
 }
 
 func (s *Scanner) reconcileMissingEbookEnrichment(ctx context.Context, folderID int) {
@@ -645,38 +652,40 @@ func (s *Scanner) autoLinkLiteraryWork(ctx context.Context, contentID string) {
 	}
 }
 
-func (s *Scanner) ebookFileShouldSkip(ctx context.Context, folder *models.MediaFolder, filePath string, size int64, modifiedAt time.Time) (string, bool, error) {
+func (s *Scanner) ebookFileShouldSkip(ctx context.Context, folder *models.MediaFolder, filePath string, size int64, modifiedAt time.Time) (string, bool, bool, error) {
 	if s.fileRepo == nil || s.itemRepo == nil {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	existing, err := s.fileRepo.ListByObservedRootPath(ctx, folder.ID, filePath)
 	if err != nil {
-		return "", false, fmt.Errorf("list existing files: %w", err)
+		return "", false, false, fmt.Errorf("list existing files: %w", err)
 	}
 	if len(existing) != 1 {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	mf := existing[0]
 	if mf.FilePath != filePath || mf.FileSize != size || mf.FileModifiedAt == nil || !sameFileModifiedAt(mf.FileModifiedAt, modifiedAt) {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if mf.ContentID == "" {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if mf.GroupKeyVersion != ebookGroupKeyVersion {
 		// The grouping scheme changed since this row was written; reprocess
 		// once so the stored key is rewritten under the current scheme and
-		// sibling-format lookups can find it again.
-		return "", false, nil
+		// sibling-format lookups can find it again. This is not a metadata
+		// change, so it must not requeue remote enrichment for the whole
+		// library when a migration requests a one-time local cover repair.
+		return mf.ContentID, false, true, nil
 	}
 	statuses, err := s.itemRepo.GetStatusByIDs(ctx, []string{mf.ContentID})
 	if err != nil {
-		return "", false, fmt.Errorf("get item status: %w", err)
+		return "", false, false, fmt.Errorf("get item status: %w", err)
 	}
 	if strings.EqualFold(strings.TrimSpace(statuses[mf.ContentID]), "unmatched") {
-		return "", false, nil
+		return "", false, false, nil
 	}
-	return mf.ContentID, true, nil
+	return mf.ContentID, true, false, nil
 }
 
 // upsertEbookMediaItem resolves or creates the media item for the file and
@@ -932,6 +941,22 @@ func (s *Scanner) upsertEbookMediaFile(ctx context.Context, folder *models.Media
 		return fmt.Errorf("upsert media file %s: %w", filePath, err)
 	}
 	return nil
+}
+
+func (s *Scanner) upsertEbookMediaFileAfterCoverAttempt(ctx context.Context, folder *models.MediaFolder, contentID string, filePath string, size int64, modifiedAt time.Time, book *parsedEbook, groupKey string, coverErr error) error {
+	mf := buildEbookMediaFileAfterCoverAttempt(folder, contentID, filePath, size, modifiedAt, book, groupKey, coverErr)
+	if _, err := s.fileRepo.Upsert(ctx, mf); err != nil {
+		return fmt.Errorf("upsert media file %s: %w", filePath, err)
+	}
+	return nil
+}
+
+func buildEbookMediaFileAfterCoverAttempt(folder *models.MediaFolder, contentID string, filePath string, size int64, modifiedAt time.Time, book *parsedEbook, groupKey string, coverErr error) models.MediaFile {
+	mf := buildEbookMediaFile(folder, contentID, filePath, size, modifiedAt, book, groupKey)
+	if coverErr != nil && mf.GroupKeyVersion > 0 {
+		mf.GroupKeyVersion--
+	}
+	return mf
 }
 
 func buildEbookMediaFile(folder *models.MediaFolder, contentID string, filePath string, size int64, modifiedAt time.Time, book *parsedEbook, groupKey string) models.MediaFile {

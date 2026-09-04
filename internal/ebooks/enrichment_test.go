@@ -1169,7 +1169,8 @@ func TestEnricherLoadsProviderIDsInOneBatchAndSurfacesErrors(t *testing.T) {
 
 func TestPreserveDurableEbookLocalMetadataAcrossRefreshes(t *testing.T) {
 	item := enrichmentItemRow{
-		Status: "matched",
+		Status:     "matched",
+		PosterPath: "local/ebooks/book/poster/original.webp",
 		ProtectedFields: []string{
 			"year", "overview", "release_date", "genres", "studios", "poster_path", "authors",
 		},
@@ -1243,6 +1244,27 @@ func TestPreserveEbookLocalPosterDuringControlledRefresh(t *testing.T) {
 	}
 	if result.Overview != "Corrected remote description" {
 		t.Fatalf("non-artwork refresh field was suppressed: %+v", result)
+	}
+}
+
+func TestPreserveEbookMetadataIgnoresStaleArtworkProtection(t *testing.T) {
+	result := &metadata.MetadataResult{
+		HasMetadata:       true,
+		PosterPath:        "https://example.test/poster.jpg",
+		PosterThumbhash:   "poster-thumb",
+		BackdropPath:      "https://example.test/backdrop.jpg",
+		BackdropThumbhash: "backdrop-thumb",
+		LogoPath:          "https://example.test/logo.png",
+	}
+
+	preserveEbookLocalMetadata(enrichmentItemRow{
+		Status:          "matched",
+		ProtectedFields: []string{"poster_path", "backdrop_path", "logo_path"},
+	}, result)
+
+	if result.PosterPath == "" || result.PosterThumbhash == "" ||
+		result.BackdropPath == "" || result.BackdropThumbhash == "" || result.LogoPath == "" {
+		t.Fatalf("stale artwork protection suppressed provider images: %+v", result)
 	}
 }
 

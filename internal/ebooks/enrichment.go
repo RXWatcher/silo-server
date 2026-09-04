@@ -898,17 +898,17 @@ func preserveEbookLocalMetadata(item enrichmentItemRow, result *metadata.Metadat
 	}
 
 	imagesLocked := isLocked(metadata.FieldImages)
-	if imagesLocked || isProtected("poster_path") ||
+	if imagesLocked ||
 		(item.PosterPath != "" && !ebookArtworkOwnedByRemoteProvider(item.PosterPath)) {
 		result.PosterPath = ""
 		result.PosterThumbhash = ""
 	}
-	if imagesLocked || isProtected("backdrop_path") ||
+	if imagesLocked ||
 		(item.BackdropPath != "" && !ebookArtworkOwnedByRemoteProvider(item.BackdropPath)) {
 		result.BackdropPath = ""
 		result.BackdropThumbhash = ""
 	}
-	if imagesLocked || isProtected("logo_path") ||
+	if imagesLocked ||
 		(item.LogoPath != "" && !ebookArtworkOwnedByRemoteProvider(item.LogoPath)) {
 		result.LogoPath = ""
 	}
