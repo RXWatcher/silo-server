@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Silo-Server/silo-server/internal/database/pglock"
 	"github.com/Silo-Server/silo-server/internal/s3client"
 )
 
@@ -55,6 +56,14 @@ const (
 	artworkSweepAnomalyFloor = 50
 )
 
+// artworkStorageSweepAdvisoryLock serializes the sweep across nodes. Silo
+// deploys as a cluster, every node runs its own triggers, and the checkpoint is
+// a single shared settings row: two nodes sweeping at once would overwrite each
+// other's cursor, so a prefix could stay unswept while both repeatedly re-walk
+// the same region. Deletions themselves are idempotent, so this protects
+// progress rather than correctness.
+const artworkStorageSweepAdvisoryLock int64 = 0x53494C4F53574550 // "SILOSWEP"
+
 // ArtworkStorageLister is the storage surface the sweep needs on top of
 // deletion: a bounded, resumable listing.
 type ArtworkStorageLister interface {
@@ -70,6 +79,7 @@ type ArtworkStorageSweepStats struct {
 	Unparsable       int    `json:"unparsable"`
 	Deleted          int    `json:"deleted"`
 	Pages            int    `json:"pages"`
+	Skipped          bool   `json:"skipped"`
 	NextToken        string `json:"next_token"`
 	PrefixDone       bool   `json:"prefix_done"`
 	StoppedOnAnomaly bool   `json:"stopped_on_anomaly"`
@@ -81,6 +91,10 @@ type ArtworkStorageSweeper struct {
 	pool *pgxpool.Pool
 	s3   ArtworkStorageLister
 	now  func() time.Time
+	// lookup resolves which candidate paths the catalog still references.
+	// Defaults to the database query; tests substitute it so the deletion
+	// guards can be exercised without a live catalog.
+	lookup func(ctx context.Context, paths []string) (map[string]struct{}, error)
 }
 
 // NewArtworkStorageSweeper returns nil when the sweep cannot run, matching the
@@ -89,7 +103,9 @@ func NewArtworkStorageSweeper(pool *pgxpool.Pool, s3 ArtworkStorageLister) *Artw
 	if pool == nil || s3 == nil {
 		return nil
 	}
-	return &ArtworkStorageSweeper{pool: pool, s3: s3, now: time.Now}
+	sweeper := &ArtworkStorageSweeper{pool: pool, s3: s3, now: time.Now}
+	sweeper.lookup = sweeper.referencedOriginals
+	return sweeper
 }
 
 // artworkObjectKey is a stored object decomposed into the parts that decide
@@ -167,6 +183,27 @@ func (s *ArtworkStorageSweeper) SweepPrefix(ctx context.Context, prefix, token s
 	if maxPages < 1 {
 		maxPages = 1
 	}
+
+	// Only one node sweeps at a time. Another node holding the lock is the
+	// normal case in a cluster, not an error: skip this run and leave its
+	// checkpoint untouched rather than racing it.
+	if s.pool != nil {
+		lock, acquired, err := pglock.TryAcquire(ctx, s.pool, artworkStorageSweepAdvisoryLock)
+		if err != nil {
+			return stats, fmt.Errorf("artwork storage sweep: acquiring sweep lock: %w", err)
+		}
+		if !acquired {
+			stats.Skipped = true
+			return stats, nil
+		}
+		defer func() {
+			if releaseErr := lock.Release(ctx); releaseErr != nil {
+				slog.WarnContext(ctx, "artwork storage sweep: releasing sweep lock failed",
+					"component", "metadata", "error", releaseErr)
+			}
+		}()
+	}
+
 	cutoff := s.now().Add(-artworkSweepMinAge)
 
 	for page := 0; page < maxPages; page++ {
@@ -188,7 +225,13 @@ func (s *ArtworkStorageSweeper) SweepPrefix(ctx context.Context, prefix, token s
 			// An object younger than the age floor is skipped without ever
 			// reaching the reference check, so a mid-write object cannot be
 			// deleted even if the catalog has not caught up to it yet.
-			if object.modified != nil && object.modified.After(cutoff) {
+			//
+			// A missing timestamp fails closed. Storage that does not report a
+			// modification time gives no way to tell a just-written object from
+			// an ancient one, and guessing "old" there would silently disable
+			// the age floor for every object it applies to. Skipping costs a
+			// little unreclaimed space; guessing costs freshly cached artwork.
+			if object.modified == nil || object.modified.After(cutoff) {
 				stats.TooNew++
 				continue
 			}
@@ -196,7 +239,7 @@ func (s *ArtworkStorageSweeper) SweepPrefix(ctx context.Context, prefix, token s
 			candidates = append(candidates, object.original)
 		}
 
-		referenced, err := s.referencedOriginals(ctx, candidates)
+		referenced, err := s.lookup(ctx, candidates)
 		if err != nil {
 			return stats, err
 		}

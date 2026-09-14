@@ -146,7 +146,10 @@ func (t *SweepArtworkStorageTask) Execute(ctx context.Context, progress taskmana
 
 	// Persist whatever progress was made before reporting an error: the work
 	// already done is real, and re-walking it on the next run is pure waste.
-	if !stats.StoppedOnAnomaly {
+	//
+	// A skipped run did none, and another node is mid-sweep holding the lock:
+	// writing our stale cursor back would drag that node's progress backwards.
+	if !stats.StoppedOnAnomaly && !stats.Skipped {
 		if stats.PrefixDone {
 			t.saveCheckpoint(ctx, artworkSweepCheckpoint{Identity: t.identity, Prefix: nextPrefix(cp.Prefix)})
 		} else {
@@ -159,6 +162,11 @@ func (t *SweepArtworkStorageTask) Execute(ctx context.Context, progress taskmana
 	}
 	if err != nil {
 		return fmt.Errorf("sweeping artwork storage: %w", err)
+	}
+
+	if stats.Skipped {
+		progress.Report(100, "Another node is already sweeping artwork storage")
+		return nil
 	}
 
 	progress.Report(100, fmt.Sprintf(
