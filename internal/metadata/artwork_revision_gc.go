@@ -17,25 +17,8 @@ import (
 )
 
 const (
-	// artworkRevisionGCBatchSize bounds both the claim and the dormant sweep.
-	//
-	// It was 100, chosen when each candidate cost its own ~2.9s DeleteObjects
-	// call and its own unindexed reference check. Both are gone: object deletes
-	// are batched into one call per run, and the reference check is indexed, so
-	// a candidate now costs a few milliseconds of database work rather than
-	// seconds.
-	//
-	// The ceiling is artworkRevisionGCLease: a run that outlives its lease has
-	// its rows re-claimed by the next worker while it is still processing them,
-	// which is a correctness problem rather than a slow one. The batch must
-	// therefore finish well inside 15 minutes on a deployment much slower than
-	// the one these figures came from.
-	//
-	// Measured there: the per-candidate database work is 0.17ms (2000
-	// candidates in 345ms), each candidate carries 4 objects, and object
-	// deletion runs at ~0.21ms per object. A 10000-candidate run is ~17.5s
-	// end to end, about 2% of the lease -- so even a deployment fifty times
-	// slower stays inside it.
+	// Bound each scheduled pass; reference-path indexes are required for this
+	// size. Deletion retains the registry locks used by concurrent uploads.
 	artworkRevisionGCBatchSize = 10000
 	artworkRevisionGCLease     = 15 * time.Minute
 	// artworkRevisionDormantRecheck bounds how stale a parked (referenced)
@@ -93,7 +76,7 @@ func (g *ArtworkRevisionGarbageCollector) Run(ctx context.Context) (ArtworkRevis
 
 	// Park referenced candidates with one batched reference check instead of a
 	// per-candidate transaction; most publish/re-cache churn lands here. The
-	// per-candidate path below re-verifies under the row lock before deleting,
+	// deletion path below re-verifies under the row lock before deleting,
 	// so a stale answer from this pre-check can only cost extra work, never a
 	// wrong deletion.
 	due := candidates
@@ -122,42 +105,16 @@ func (g *ArtworkRevisionGarbageCollector) Run(ctx context.Context) (ArtworkRevis
 		}
 	}
 
-	// Delete every claimed candidate's objects in one batched call. B2 bills
-	// this call at ~2.9s whether it carries one key or a thousand -- the cost is
-	// per call, not per object -- so issuing it per candidate made a
-	// 100-candidate run take ~290s and the queue could never drain. Deleting
-	// ahead of the per-candidate guard is consistent with the design's existing
-	// assumption that a path can race back into use after its objects are gone:
-	// that is exactly what the pending-heal path below repairs.
-	predeleted := make(map[int64]struct{}, len(due))
-	if len(due) > 0 {
-		keys := make([]string, 0, len(due)*4)
+	predeleted, err := g.deleteClaimedObjects(ctx, due, workerID)
+	if err != nil {
+		stats.Claimed = len(candidates)
 		for _, candidate := range due {
-			objectKeys := candidate.objectKeys
-			if len(objectKeys) == 0 {
-				objectKeys = artworkkey.ObjectKeys(candidate.originalPath, candidate.imageType)
+			if retryErr := g.retry(ctx, candidate, workerID, err); retryErr != nil {
+				err = errors.Join(err, retryErr)
 			}
-			if len(objectKeys) == 0 {
-				continue
-			}
-			keys = append(keys, objectKeys...)
-			predeleted[candidate.id] = struct{}{}
+			stats.Retried++
 		}
-		if len(keys) > 0 {
-			// A short count means per-object failures without a top-level
-			// error, and it does not say WHICH keys survived. Treat it exactly
-			// like an error: drop the whole predeleted set so every candidate
-			// goes through the per-candidate path, which re-deletes its own
-			// keys and retries with backoff. Marking them deleted here would
-			// finalize rows whose objects still exist, and the candidate row is
-			// the only record that those objects are collectable.
-			deleted, delErr := g.s3.DeleteObjects(ctx, g.s3.Bucket(), keys)
-			if delErr != nil || deleted != len(keys) {
-				predeleted = map[int64]struct{}{}
-				slog.WarnContext(ctx, "artwork revision GC: batched delete incomplete; falling back per candidate",
-					"component", "metadata", "keys", len(keys), "deleted", deleted, "error", delErr)
-			}
-		}
+		return stats, err
 	}
 
 	pendingHeals := make([]artworkRevisionGCPendingHeal, 0, len(due))
@@ -342,6 +299,93 @@ func (g *ArtworkRevisionGarbageCollector) parkClaimed(ctx context.Context, ids [
 		return fmt.Errorf("artwork revision GC: park referenced revisions: %w", err)
 	}
 	return nil
+}
+
+// deleteClaimedObjects keeps upload registration serialized with deletion.
+// Re-read ownership, manifests, and references under the registry locks: a
+// candidate may have been republished since claim or the reference pre-check.
+func (g *ArtworkRevisionGarbageCollector) deleteClaimedObjects(
+	ctx context.Context, candidates []artworkRevisionGCCandidate, workerID string,
+) (map[int64]struct{}, error) {
+	deleted := make(map[int64]struct{}, len(candidates))
+	if len(candidates) == 0 {
+		return deleted, nil
+	}
+	tx, err := g.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	ids := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.id)
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT id, original_path, image_type, object_keys, deleted_at
+		FROM artwork_revision_gc_candidates
+		WHERE id = ANY($1) AND locked_by = $2
+		ORDER BY id
+		FOR UPDATE`, ids, workerID)
+	if err != nil {
+		return nil, err
+	}
+	var locked []artworkRevisionGCCandidate
+	for rows.Next() {
+		var candidate artworkRevisionGCCandidate
+		if err := rows.Scan(&candidate.id, &candidate.originalPath, &candidate.imageType,
+			&candidate.objectKeys, &candidate.deletedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		locked = append(locked, candidate)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	referenced, err := referencedArtworkPaths(ctx, tx, candidatePaths(locked))
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	ids = ids[:0]
+	for _, candidate := range locked {
+		if _, live := referenced[candidate.originalPath]; live && candidate.deletedAt == nil {
+			continue // The per-candidate guard will park this still-live revision.
+		}
+		objectKeys := candidate.objectKeys
+		if len(objectKeys) == 0 {
+			objectKeys = artworkkey.ObjectKeys(candidate.originalPath, candidate.imageType)
+		}
+		keys = append(keys, objectKeys...)
+		ids = append(ids, candidate.id)
+		deleted[candidate.id] = struct{}{}
+	}
+	var deleteErr error
+	if len(keys) > 0 {
+		count, err := g.s3.DeleteObjects(ctx, g.s3.Bucket(), keys)
+		deleteErr = err
+		if err == nil && count != len(keys) {
+			deleteErr = fmt.Errorf("deleted %d of %d artwork objects", count, len(keys))
+		}
+	}
+	// Even an error or a short count can leave missing objects. Preserve every
+	// attempted revision as a tombstone so a retry cannot park a broken reference.
+	// Retrying re-deletes the full manifest before finalizing these rows.
+	// Storage may return after cancellation with some keys already removed.
+	// Give the tombstone commit its own bounded context before releasing locks.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := tx.Exec(persistCtx, `
+		UPDATE artwork_revision_gc_candidates
+		SET deleted_at = COALESCE(deleted_at, NOW()), locked_at = NOW(), updated_at = NOW()
+		WHERE id = ANY($1) AND locked_by = $2`, ids, workerID); err != nil {
+		return nil, errors.Join(deleteErr, err)
+	}
+	if err := tx.Commit(persistCtx); err != nil {
+		return nil, errors.Join(deleteErr, err)
+	}
+	return deleted, deleteErr
 }
 
 // processCandidateToHeal holds the registry row lock across the last reference
@@ -549,11 +593,19 @@ func (g *ArtworkRevisionGarbageCollector) isReferenced(ctx context.Context, q ar
 // referencedPaths returns the subset of paths referenced by any catalog
 // surface, using one query per run instead of one per candidate.
 func (g *ArtworkRevisionGarbageCollector) referencedPaths(ctx context.Context, paths []string) (map[string]struct{}, error) {
+	return referencedArtworkPaths(ctx, g.pool, paths)
+}
+
+type artworkReferenceRowsQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func referencedArtworkPaths(ctx context.Context, q artworkReferenceRowsQuerier, paths []string) (map[string]struct{}, error) {
 	referenced := make(map[string]struct{})
 	if len(paths) == 0 {
 		return referenced, nil
 	}
-	rows, err := g.pool.Query(ctx, "SELECT DISTINCT path FROM ("+artworkReferenceUnionSQL("$1")+") refs", paths)
+	rows, err := q.Query(ctx, "SELECT DISTINCT path FROM ("+artworkReferenceUnionSQL("$1")+") refs", paths)
 	if err != nil {
 		return nil, fmt.Errorf("artwork revision GC: batch reference check: %w", err)
 	}
