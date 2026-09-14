@@ -1212,7 +1212,7 @@ func TestArtworkRevisionGCBatchRechecksOwnershipAndReferences(t *testing.T) {
 		}
 		return len(keys), nil
 	}}
-	deleted, err := NewArtworkRevisionGarbageCollector(pool, deleter).deleteClaimedObjects(ctx, candidates, worker)
+	deleted, _, err := NewArtworkRevisionGarbageCollector(pool, deleter).processCandidatesToHeal(ctx, candidates, worker)
 	if err != nil {
 		t.Fatal(err)
 	}
