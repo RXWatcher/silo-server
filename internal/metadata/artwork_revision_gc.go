@@ -108,13 +108,14 @@ func (g *ArtworkRevisionGarbageCollector) Run(ctx context.Context) (ArtworkRevis
 	predeleted, err := g.deleteClaimedObjects(ctx, due, workerID)
 	if err != nil {
 		stats.Claimed = len(candidates)
+		var firstRetryErr error
 		for _, candidate := range due {
-			if retryErr := g.retry(ctx, candidate, workerID, err); retryErr != nil {
-				err = errors.Join(err, retryErr)
+			if retryErr := g.retry(ctx, candidate, workerID, err); retryErr != nil && firstRetryErr == nil {
+				firstRetryErr = retryErr
 			}
 			stats.Retried++
 		}
-		return stats, err
+		return stats, errors.Join(err, firstRetryErr)
 	}
 
 	pendingHeals := make([]artworkRevisionGCPendingHeal, 0, len(due))
