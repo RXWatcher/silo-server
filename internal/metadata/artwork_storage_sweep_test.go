@@ -290,7 +290,7 @@ func TestSweepResumesAcrossPagesAndStopsAtMaxPages(t *testing.T) {
 func TestSweepWithoutAPoolSkipsClusterLocking(t *testing.T) {
 	t.Parallel()
 	// The lock needs a pool. A sweeper without one (as in these tests) must
-	// still run rather than dereference nil — pglock's nil-pool behaviour is
+	// still run rather than dereference nil — pglock's nil-pool behavior is
 	// not safe to rely on.
 	storage := &fakeArtworkStorage{
 		pages:  [][]s3client.ObjectInfo{ageingObjects("local", 2, 72*time.Hour)},
