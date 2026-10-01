@@ -248,6 +248,20 @@ describe("SeasonContent", () => {
     expect(mocks.capturedActionBarProps.value).not.toHaveProperty("onRatingChange");
   });
 
+  it("adds the parent series to collections, since seasons are not collection members", () => {
+    renderToStaticMarkup(
+      <MemoryRouter initialEntries={["/item/season-1"]}>
+        <SeasonContent item={makeSeasonItem()} />
+      </MemoryRouter>,
+    );
+
+    expect(mocks.capturedActionBarProps.value).toMatchObject({
+      contentId: "season-1",
+      collectionItemId: "series-1",
+      collectionItemTitle: "Example Series",
+    });
+  });
+
   it("passes partial-progress restart eligibility to episode menus", () => {
     mocks.useItemEpisodes.mockReturnValue({
       data: {

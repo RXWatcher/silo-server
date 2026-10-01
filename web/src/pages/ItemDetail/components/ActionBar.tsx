@@ -173,6 +173,14 @@ export interface ActionBarLink {
 export interface ActionBarProps {
   compactMobile?: boolean;
   contentId?: string;
+  /**
+   * Catalog item that Add to Collection adds. Collections hold catalog items
+   * (movies, series), so a season page passes its series and an episode page
+   * passes nothing, which hides the action.
+   */
+  collectionItemId?: string;
+  /** Title of collectionItemId, shown in the picker when it differs from the page. */
+  collectionItemTitle?: string;
   watchTogether?: ActionBarWatchTogether;
   /** Replaces the Play action. */
   primaryAction?: ActionBarPrimaryAction;
@@ -244,6 +252,8 @@ export interface ActionBarProps {
 export default function ActionBar({
   compactMobile = false,
   contentId,
+  collectionItemId,
+  collectionItemTitle,
   watchTogether,
   primaryAction,
   secondaryActions,
@@ -568,7 +578,7 @@ export default function ActionBar({
     hasOverflowActions ||
     hasAdminActions ||
     hasMetadataActions ||
-    Boolean(contentId) ||
+    Boolean(collectionItemId) ||
     (compactMobile && Boolean(onToggleFavorite || onRatingChange)) ||
     Boolean(watchTogether);
 
@@ -803,7 +813,7 @@ export default function ActionBar({
                   {inWatchlist ? "Remove from Watchlist" : "Add to Watchlist"}
                 </DetailOverflowMenuItem>
               )}
-              {contentId && (
+              {collectionItemId && (
                 <DetailOverflowMenuItem
                   closeMenu={closeOverflowMenu}
                   onAction={() => setAddToCollectionOpen(true)}
@@ -1005,11 +1015,12 @@ export default function ActionBar({
             isPending={isRedetectingMarkers}
           />
         )}
-        {contentId && (
+        {collectionItemId && (
           <AddToCollectionDialog
             open={addToCollectionOpen}
             onOpenChange={setAddToCollectionOpen}
-            mediaItemId={contentId}
+            mediaItemId={collectionItemId}
+            itemTitle={collectionItemTitle}
           />
         )}
       </div>

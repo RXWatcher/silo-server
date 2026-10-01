@@ -8,8 +8,14 @@ vi.mock("@/playback/watchPlaybackContext", () => ({
   useWatchPlaybackController: () => ({ startPlayback: vi.fn() }),
 }));
 
+const collectionDialogMocks = vi.hoisted(() => ({
+  props: null as { open: boolean; mediaItemId: string; itemTitle?: string } | null,
+}));
 vi.mock("@/components/AddToCollectionDialog", () => ({
-  default: () => null,
+  default: (props: { open: boolean; mediaItemId: string; itemTitle?: string }) => {
+    collectionDialogMocks.props = props;
+    return null;
+  },
 }));
 
 const markerMocks = vi.hoisted(() => ({
@@ -245,5 +251,43 @@ describe("ActionBar watch together group", () => {
     await userEvent.click(screen.getByTitle("More"));
     await userEvent.click(screen.getByRole("menuitem", { name: "Request Seasons" }));
     expect(onRequestSeasons).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ActionBar add to collection", () => {
+  afterEach(() => {
+    collectionDialogMocks.props = null;
+  });
+
+  it("adds the collection item, not the page's own content", async () => {
+    render(
+      <MemoryRouter>
+        <ActionBar
+          contentId="season-1"
+          collectionItemId="series-1"
+          collectionItemTitle="Example Series"
+        />
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByTitle("More"));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Add to Collection" }));
+
+    expect(collectionDialogMocks.props).toMatchObject({
+      open: true,
+      mediaItemId: "series-1",
+      itemTitle: "Example Series",
+    });
+  });
+
+  it("hides Add to Collection without a collection item", async () => {
+    render(
+      <MemoryRouter>
+        <ActionBar contentId="episode-1" onToggleWatchlist={() => {}} />
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByTitle("More"));
+
+    expect(screen.queryByRole("menuitem", { name: "Add to Collection" })).toBeNull();
+    expect(collectionDialogMocks.props).toBeNull();
   });
 });
