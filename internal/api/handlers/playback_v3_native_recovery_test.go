@@ -237,3 +237,19 @@ func TestRemapSubtitleSelectionAcrossFormatsNeedsOneDeliverableMatch(t *testing.
 		t.Fatalf("embedded title disambiguation: got %d, %v; want the Commentary track at 1", got, err)
 	}
 }
+
+// A failed downloaded-subtitle lookup is an error, not a missing track: dropping
+// the selection would keep subtitles off for the rest of the session.
+func TestRemapSubtitleSelectionKeepsDownloadedSelectionWhenLookupFails(t *testing.T) {
+	repo := newMockSubtitleRepoForHandler()
+	repo.listErr = errors.New("database unavailable")
+	handler := &PlaybackHandler{SubtitleRepo: repo}
+	request := playback.StartRequestV3{SubtitleTrackIndex: new(0)}
+	dropped, err := handler.remapSubtitleSelectionV3(t.Context(), &models.MediaFile{ID: 1}, &models.MediaFile{ID: 2}, &request)
+	if err == nil || dropped {
+		t.Fatalf("lookup failure must be an error: dropped=%v err=%v", dropped, err)
+	}
+	if request.SubtitleTrackIndex == nil || *request.SubtitleTrackIndex != 0 {
+		t.Fatalf("selection changed on a lookup failure: %+v", request)
+	}
+}
