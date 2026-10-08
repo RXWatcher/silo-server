@@ -5077,12 +5077,15 @@ func (h *PlaybackHandler) executeReplanV3(r *http.Request, record *playback.Atte
 	}
 	if start.AllowsAlternateVersions() && terminalAllowsAlternateFileV3(result.Terminal) && replanAllowsAlternateFileV3(operation, start.QualityPreference) {
 		accessFilter := requestAccessFilter(r)
-		if alternates, alternateErr := h.findAlternateFiles(r.Context(), requestedFile, accessFilter); alternateErr == nil {
-			if keptActiveEditionForSubtitle {
-				// The requested edition was passed over only to keep the
-				// subtitle; it can still play without it if nothing else can.
-				alternates = append(alternates, requestedFile)
-			}
+		alternates, alternateErr := h.findAlternateFiles(r.Context(), requestedFile, accessFilter)
+		if keptActiveEditionForSubtitle {
+			// The requested edition was passed over only to keep the subtitle;
+			// it can still play without it if nothing else can, whether or not
+			// sibling discovery succeeded.
+			alternates = append(alternates, requestedFile)
+			alternateErr = nil
+		}
+		if alternateErr == nil {
 			baseStart := start
 			baseEffectiveFile := effectiveFile
 			baseAudioIndex := audioIndex

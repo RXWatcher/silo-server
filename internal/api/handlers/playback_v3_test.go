@@ -4568,6 +4568,12 @@ func TestHandleReplanPlaybackV3QualityChangeKeepsSubtitleOnActiveAlternate(t *te
 // requested edition still plays, without the subtitle, rather than ending in a
 // terminal.
 func TestHandleReplanPlaybackV3QualityChangeFallsBackToRequestedEditionWithoutSubtitle(t *testing.T) {
+	for name, discoveryFails := range map[string]bool{"siblings found": false, "sibling discovery fails": true} {
+		t.Run(name, func(t *testing.T) { checkRequestedEditionFallbackWithoutSubtitleV3(t, discoveryFails) })
+	}
+}
+
+func checkRequestedEditionFallbackWithoutSubtitleV3(t *testing.T, discoveryFails bool) {
 	failedAt := time.Now().UTC()
 	requested := v3HandlerFixtureFile(t)
 	repaired := *requested
@@ -4629,6 +4635,11 @@ func TestHandleReplanPlaybackV3QualityChangeFallsBackToRequestedEditionWithoutSu
 		t.Fatalf("subtitle selection on the alternate failed: %#v", subtitled.Terminal)
 	}
 
+	if discoveryFails {
+		// The requested edition is already resolved, so it stays a fallback
+		// even when the sibling lookup errors.
+		handler.FileVersionFetcher = nil
+	}
 	currentKey := playback.PlanAttemptKeyV3(*subtitled.PlaybackPlan, startRequest.ClientPlaybackContext.Output.OutputContextID, nil)
 	response := postPlaybackReplanV3(t, handler, started.SessionID, playback.ReplanRequestV3{
 		ProtocolVersion: playback.ProtocolV3, Operation: playback.ReplanOperationQualityChangeV3,
