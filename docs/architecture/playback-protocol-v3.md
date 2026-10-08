@@ -973,11 +973,12 @@ omitted `selected_tracks.subtitle` the explicit meaning "subtitles off". A
 fallback to another media version must remap the selected subtitle. It
 prefers a version with an equivalent track; when none has one, playback
 continues with subtitles off and the plan carries `subtitle_track_unavailable`
-rather than ending in a terminal. A selection the effective file cannot honour
-on a direct start degrades the same way. An output refresh that would have to
-drop the subtitle stays on the version already playing. Malformed selections (a
-track identity that does not parse or names another file, or a negative index)
-are still rejected.
+rather than ending in a terminal. A selection the effective file cannot honor
+on a direct start degrades the same way. A replan that would have to drop the
+subtitle to return to the requested version stays on the version already
+playing, unless quality `original` pins the requested version. Malformed
+selections (a track identity that does not parse or names another file, or a
+negative index) are still rejected.
 
 `local_mutations` (up to 8 entries, 64 chars each) reports client-side
 adjustments — a transport reopen, a PCM decode fallback — that change the

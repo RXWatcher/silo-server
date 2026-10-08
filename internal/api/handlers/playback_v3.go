@@ -4960,10 +4960,15 @@ func (h *PlaybackHandler) executeReplanV3(r *http.Request, record *playback.Atte
 			if remapErr == nil && (candidateStart.SubtitleTrackIndex != nil || candidateStart.SubtitleTrackID != "") {
 				subtitleDropped, remapErr = h.remapSubtitleSelectionV3(r.Context(), currentEffectiveFile, effectiveFile, &candidateStart)
 			}
-			if (remapErr != nil || subtitleDropped) && outputChange {
-				// An output refresh may make the requested edition viable again,
-				// but it must not retire a healthy active alternate merely because
-				// the viewer selected a track unique to that alternate.
+			// An output refresh may make the requested edition viable again,
+			// but it must not retire a healthy active alternate merely because
+			// the viewer selected a track unique to that alternate. Other intent
+			// changes must not drop the viewer's subtitle to get back there either,
+			// unless quality "original" pins the requested edition. Staying keeps
+			// the selection, so a fallback can still prefer a version that has it.
+			keepActiveEdition := (outputChange && (remapErr != nil || subtitleDropped)) ||
+				(subtitleDropped && shouldTryAlternateFileV3(start.QualityPreference))
+			if keepActiveEdition {
 				effectiveFile = currentEffectiveFile
 			} else if remapErr != nil {
 				return playback.DecisionResponseV3{}, *record, nil, &transportErrorV3{reason: "track_unavailable", message: remapErr.Error()}
