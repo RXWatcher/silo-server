@@ -4941,6 +4941,7 @@ func (h *PlaybackHandler) executeReplanV3(r *http.Request, record *playback.Atte
 	}
 	effectiveFile := currentEffectiveFile
 	currentEffectiveStart := start
+	keptActiveEditionForSubtitle := false
 	if intentChange && !trackChange {
 		// Prefer returning to the requested edition, but a quality/output/track
 		// change must not abandon a healthy active alternate merely because the
@@ -4970,6 +4971,7 @@ func (h *PlaybackHandler) executeReplanV3(r *http.Request, record *playback.Atte
 				(subtitleDropped && shouldTryAlternateFileV3(start.QualityPreference))
 			if keepActiveEdition {
 				effectiveFile = currentEffectiveFile
+				keptActiveEditionForSubtitle = subtitleDropped
 			} else if remapErr != nil {
 				return playback.DecisionResponseV3{}, *record, nil, &transportErrorV3{reason: "track_unavailable", message: remapErr.Error()}
 			} else {
@@ -5076,6 +5078,11 @@ func (h *PlaybackHandler) executeReplanV3(r *http.Request, record *playback.Atte
 	if start.AllowsAlternateVersions() && terminalAllowsAlternateFileV3(result.Terminal) && replanAllowsAlternateFileV3(operation, start.QualityPreference) {
 		accessFilter := requestAccessFilter(r)
 		if alternates, alternateErr := h.findAlternateFiles(r.Context(), requestedFile, accessFilter); alternateErr == nil {
+			if keptActiveEditionForSubtitle {
+				// The requested edition was passed over only to keep the
+				// subtitle; it can still play without it if nothing else can.
+				alternates = append(alternates, requestedFile)
+			}
 			baseStart := start
 			baseEffectiveFile := effectiveFile
 			baseAudioIndex := audioIndex

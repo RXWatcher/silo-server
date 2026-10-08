@@ -976,7 +976,9 @@ continues with subtitles off and the plan carries `subtitle_track_unavailable`
 rather than ending in a terminal. A selection the effective file cannot honor
 on a direct start degrades the same way. A replan that would have to drop the
 subtitle to return to the requested version stays on the version already
-playing, unless quality `original` pins the requested version. Malformed
+playing, unless quality `original` pins the requested version; the requested
+version remains a fallback without the subtitle if no version that keeps it can
+play. Malformed
 selections (a track identity that does not parse or names another file, or a
 negative index) are still rejected.
 
