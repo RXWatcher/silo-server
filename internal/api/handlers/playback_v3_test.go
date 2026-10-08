@@ -4189,6 +4189,14 @@ func TestResolveV3AudioIndexFallsBackWhenSelectionIsOutOfRange(t *testing.T) {
 	}
 }
 
+func TestResolveV3AudioIndexRejectsNegativeIndex(t *testing.T) {
+	negative := -1
+	file := &models.MediaFile{ID: 1, AudioTracks: []models.AudioTrack{{Language: "eng"}}}
+	if _, degraded, err := resolveV3AudioIndex(file, "", &negative); err == nil || degraded {
+		t.Fatalf("a negative audio index must be rejected, not degraded: degraded=%v err=%v", degraded, err)
+	}
+}
+
 func TestRouteEventV3HasPerUserLimitAcrossAttemptIDs(t *testing.T) {
 	handler := NewPlaybackHandler(playback.NewSessionManager(0, 0))
 	for i := 0; i < 600; i++ {

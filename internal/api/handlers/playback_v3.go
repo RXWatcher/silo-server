@@ -6314,10 +6314,15 @@ func resolveV3AudioIndex(file *models.MediaFile, trackID string, fallback *int) 
 	} else if fallback != nil {
 		index = *fallback
 	}
+	if index < 0 {
+		// Request validation rejects this first; a negative index is a client
+		// bug, not a track the file lacks.
+		return 0, false, errors.New("selected audio track index is invalid")
+	}
 	if file == nil || len(file.AudioTracks) == 0 {
 		return 0, index != 0, nil
 	}
-	if index < 0 || index >= len(file.AudioTracks) {
+	if index >= len(file.AudioTracks) {
 		// A carried-over selection that does not exist on this file is not a
 		// reason to refuse playback. The commonest source is the next episode
 		// in a series having a different track layout to the one the viewer
