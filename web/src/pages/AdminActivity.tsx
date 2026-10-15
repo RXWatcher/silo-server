@@ -75,6 +75,14 @@ const REFRESH_SPINNER_MIN_VISIBLE_MS = 1_000;
 const STREAM_TABLE_COLUMNS =
   "grid-cols-[minmax(120px,1.1fr)_minmax(190px,1.7fr)_minmax(220px,1.9fr)_minmax(90px,0.8fr)_minmax(125px,0.9fr)_minmax(232px,1.4fr)]";
 
+const STACKED_SORT_FIELDS: [SortField, string][] = [
+  ["username", "User"],
+  ["media", "Stream"],
+  ["method", "Playback"],
+  ["node", "Route"],
+  ["started", "Time"],
+];
+
 function routeSortValue(session: AdminSession): string {
   return getSessionRouteNodes(session)
     .map((node) => `${node.label} ${node.name}`)
@@ -530,6 +538,28 @@ export default function AdminActivity() {
         <EmptyState hasData={sessions.length > 0} />
       ) : (
         <div className="bg-card border-border @container overflow-hidden rounded-lg border">
+          {/* Sort controls for the stacked rows, which have no column headers */}
+          <div
+            role="group"
+            aria-label="Sort streams"
+            className="border-border bg-surface/50 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b px-4 py-2.5 @min-[calc(977px+4rem)]:hidden"
+          >
+            <span className="text-muted-foreground/70 text-[10px] font-semibold tracking-wider uppercase">
+              Sort
+            </span>
+            {STACKED_SORT_FIELDS.map(([field, label]) => (
+              <SortHeader
+                key={field}
+                field={field}
+                current={sortField}
+                dir={sortDir}
+                onClick={toggleSort}
+              >
+                {label}
+              </SortHeader>
+            ))}
+          </div>
+
           {/* Table header */}
           <div
             className={`border-border bg-surface/50 hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 border-b px-3 py-2.5 @min-[calc(977px+4rem)]:grid`}
