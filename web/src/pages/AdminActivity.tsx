@@ -69,9 +69,9 @@ type SortDir = "asc" | "desc";
 const REFRESH_SPINNER_MIN_VISIBLE_MS = 1_000;
 
 // The stream table's header and rows share one column template, whose minimums
-// add up to 1041px with the gaps and padding. Below that the table shows the
-// stacked rows instead of clipping its right-hand columns; the breakpoint is
-// the table's own width because the admin sidebar takes 240px of the viewport.
+// add up to 977px plus 4rem of gaps and padding (1041px at a 16px root font,
+// 1057px at 20px). Keep the spacing in rem in the container breakpoint so larger
+// fonts show stacked rows until the columns fit, regardless of sidebar width.
 const STREAM_TABLE_COLUMNS =
   "grid-cols-[minmax(120px,1.1fr)_minmax(190px,1.7fr)_minmax(220px,1.9fr)_minmax(90px,0.8fr)_minmax(125px,0.9fr)_minmax(232px,1.4fr)]";
 
@@ -532,7 +532,7 @@ export default function AdminActivity() {
         <div className="bg-card border-border @container overflow-hidden rounded-lg border">
           {/* Table header */}
           <div
-            className={`border-border bg-surface/50 hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 border-b px-3 py-2.5 @min-[1041px]:grid`}
+            className={`border-border bg-surface/50 hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 border-b px-3 py-2.5 @min-[calc(977px+4rem)]:grid`}
           >
             <SortHeader field="username" current={sortField} dir={sortDir} onClick={toggleSort}>
               User
@@ -659,7 +659,7 @@ function StreamRow({
     >
       {/* Desktop row */}
       <div
-        className={`hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 px-3 py-2.5 @min-[1041px]:grid`}
+        className={`hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 px-3 py-2.5 @min-[calc(977px+4rem)]:grid`}
       >
         {/* User */}
         <div className="flex min-w-0 items-center gap-2">
@@ -843,7 +843,7 @@ function StreamRow({
       </div>
 
       {/* Mobile row */}
-      <div className="flex gap-3 px-4 py-3 @min-[1041px]:hidden">
+      <div className="flex gap-3 px-4 py-3 @min-[calc(977px+4rem)]:hidden">
         <Link
           to={userHref}
           className="text-primary-foreground flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold"

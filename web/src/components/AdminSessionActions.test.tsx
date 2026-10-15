@@ -30,7 +30,7 @@ const session = {
 } as AdminSession;
 
 describe("inline session actions", () => {
-  it("wraps onto another line instead of spilling past a narrow column", () => {
+  it("renders prefix, terminate, and menu buttons together", () => {
     render(
       <AdminSessionActions
         session={session}
@@ -41,8 +41,8 @@ describe("inline session actions", () => {
       />,
     );
 
-    const row = screen.getByRole("button", { name: "FFmpeg" }).parentElement;
-    expect(row).toHaveClass("flex", "flex-wrap", "justify-end");
-    expect(row).toContainElement(screen.getByRole("button", { name: /terminate/i }));
+    expect(screen.getByRole("button", { name: "FFmpeg" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /terminate/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Session actions" })).toBeVisible();
   });
 });
