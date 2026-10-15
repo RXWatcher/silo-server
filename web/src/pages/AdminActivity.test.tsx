@@ -105,6 +105,26 @@ function renderActivity() {
   );
 }
 
+describe("stream table layout", () => {
+  it("switches between table and stacked rows on the table's own width", () => {
+    mocks.sessions = [makeSession()];
+    renderActivity();
+
+    const header = screen.getByText("Actions").parentElement!;
+    const row = screen.getAllByText("Example viewer")[0]!.closest('[class*="grid-cols-"]')!;
+    const card = header.parentElement!;
+    expect(card).toHaveClass("@container");
+    for (const grid of [header, row]) {
+      expect(grid).toHaveClass("hidden", "@min-[1041px]:grid");
+      expect(grid).not.toHaveClass("sm:grid");
+    }
+    // The header and rows share one column template, so their columns line up.
+    const template = (element: Element) => element.className.match(/grid-cols-\[[^\s]+\]/)?.[0];
+    expect(template(header)).toBe(template(row));
+    expect(row.parentElement!.querySelector(".flex.gap-3")).toHaveClass("@min-[1041px]:hidden");
+  });
+});
+
 describe("activity playback scopes", () => {
   beforeEach(() => {
     mocks.sessions = [makeSession()];

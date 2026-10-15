@@ -68,6 +68,13 @@ type SortDir = "asc" | "desc";
 
 const REFRESH_SPINNER_MIN_VISIBLE_MS = 1_000;
 
+// The stream table's header and rows share one column template, whose minimums
+// add up to 1041px with the gaps and padding. Below that the table shows the
+// stacked rows instead of clipping its right-hand columns; the breakpoint is
+// the table's own width because the admin sidebar takes 240px of the viewport.
+const STREAM_TABLE_COLUMNS =
+  "grid-cols-[minmax(120px,1.1fr)_minmax(190px,1.7fr)_minmax(220px,1.9fr)_minmax(90px,0.8fr)_minmax(125px,0.9fr)_minmax(232px,1.4fr)]";
+
 function routeSortValue(session: AdminSession): string {
   return getSessionRouteNodes(session)
     .map((node) => `${node.label} ${node.name}`)
@@ -522,9 +529,11 @@ export default function AdminActivity() {
       {filtered.length === 0 ? (
         <EmptyState hasData={sessions.length > 0} />
       ) : (
-        <div className="bg-card border-border overflow-hidden rounded-lg border">
+        <div className="bg-card border-border @container overflow-hidden rounded-lg border">
           {/* Table header */}
-          <div className="border-border bg-surface/50 hidden grid-cols-[minmax(120px,1.1fr)_minmax(190px,1.7fr)_minmax(220px,1.9fr)_minmax(90px,0.8fr)_minmax(125px,0.9fr)_minmax(220px,1.4fr)] items-center gap-2 border-b px-3 py-2.5 sm:grid">
+          <div
+            className={`border-border bg-surface/50 hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 border-b px-3 py-2.5 @min-[1041px]:grid`}
+          >
             <SortHeader field="username" current={sortField} dir={sortDir} onClick={toggleSort}>
               User
             </SortHeader>
@@ -649,7 +658,9 @@ function StreamRow({
       }`}
     >
       {/* Desktop row */}
-      <div className="hidden grid-cols-[minmax(120px,1.1fr)_minmax(190px,1.7fr)_minmax(220px,1.9fr)_minmax(90px,0.8fr)_minmax(125px,0.9fr)_minmax(220px,1.4fr)] items-center gap-2 px-3 py-2.5 sm:grid">
+      <div
+        className={`hidden ${STREAM_TABLE_COLUMNS} items-center gap-2 px-3 py-2.5 @min-[1041px]:grid`}
+      >
         {/* User */}
         <div className="flex min-w-0 items-center gap-2">
           <Link to={userHref} className="hover:text-primary shrink-0 transition-colors">
@@ -832,7 +843,7 @@ function StreamRow({
       </div>
 
       {/* Mobile row */}
-      <div className="flex gap-3 px-4 py-3 sm:hidden">
+      <div className="flex gap-3 px-4 py-3 @min-[1041px]:hidden">
         <Link
           to={userHref}
           className="text-primary-foreground flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
